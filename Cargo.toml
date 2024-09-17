@@ -1,0 +1,10 @@
+[package]
+name = "scru64-node-id-server"
+version = "0.1.0"
+authors = ["LiosK <contact@mail.liosk.net>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+scru64 = { version = "2.0", default-features = false, features = ["std"] }
