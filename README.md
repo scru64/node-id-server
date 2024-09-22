@@ -1,10 +1,12 @@
 # SCRU64 `node_id` Server
 
 This crate includes functions to develop a SCRU64 `node_id` server that assigns
-unique `node_id`s of variable `node_id_size`s to distributed SCRU64 generators.
-Refer to the examples directory for concrete usage.
+non-overlapping `node_id`s of various `node_id_size`s to distributed SCRU64
+generators. Refer to [the examples directory] for concrete usage.
 
 See also [SCRU64 Specification](https://github.com/scru64/spec).
+
+[the examples directory]: https://github.com/scru64/node-id-server/tree/main/examples
 
 ## Usage examples
 
