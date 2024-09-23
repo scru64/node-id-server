@@ -44,26 +44,28 @@ impl Registry {
             return Err(crate::Error("could not issue node_id: empty range"));
         }
 
-        let (mut cursor_pos, mut cursor_val) = match range.start {
-            0 => (0, 0),
+        let mut cursor_pos = match range.start {
+            0 => 0,
             start => match NodeSpec::with_node_id(start, node_id_size) {
                 // find index of start or, if not found, set cursor to immediately preceding entry
                 Ok(node_spec) => match self.inner.binary_search(&NodeSpecPacked::new(node_spec)) {
-                    Ok(i) => (i, range.start),
-                    Err(0) => (0, range.start),
-                    Err(i) => (i - 1, self.inner[i - 1].node_id_as(node_id_size)),
+                    Ok(i) => i,
+                    Err(0) => 0,
+                    Err(i) => i - 1,
                 },
                 Err(_) => unreachable!(),
             },
         };
 
+        let mut cursor_val = range.start;
         for e in self.inner.range(cursor_pos..) {
             // compare leading `min` bits of `e` and `cursor_val`
             let min = node_id_size.min(e.node_id_size());
-            match e.node_id_as(min).cmp(&(cursor_val >> (node_id_size - min))) {
+            let cursor_val_as_min = cursor_val >> (node_id_size - min);
+            match e.node_id_as(min).cmp(&cursor_val_as_min) {
                 cmp::Ordering::Less => {}
                 cmp::Ordering::Equal => {
-                    cursor_val += 1 << (node_id_size - min);
+                    cursor_val = (cursor_val_as_min + 1) << (node_id_size - min);
                     if cursor_val >= range.end {
                         return Err(crate::Error("could not issue node_id: no space"));
                     }
@@ -293,6 +295,37 @@ mod tests {
             }
             assert!(reg.iter().next().is_none());
         }
+    }
+
+    #[test]
+    fn request_range_start() {
+        let mut reg = Registry::default();
+
+        assert_eq!(reg.request(8, 0x0..).unwrap().node_id(), 0x00);
+        assert_eq!(reg.request(8, 0x0..).unwrap().node_id(), 0x01);
+        assert_eq!(reg.request(8, 0x8..).unwrap().node_id(), 0x08);
+        assert_eq!(reg.request(8, 0x8..).unwrap().node_id(), 0x09);
+        assert_eq!(reg.request(8, 0x4..).unwrap().node_id(), 0x04);
+        assert_eq!(reg.request(8, 0x4..).unwrap().node_id(), 0x05);
+
+        assert_eq!(reg.request(12, 0x20..).unwrap().node_id(), 0x020);
+        assert_eq!(reg.request(12, 0x20..).unwrap().node_id(), 0x021);
+        assert_eq!(reg.request(12, 0x40..).unwrap().node_id(), 0x060);
+        assert_eq!(reg.request(12, 0x40..).unwrap().node_id(), 0x061);
+        assert_eq!(reg.request(12, 0x48..).unwrap().node_id(), 0x062);
+        assert_eq!(reg.request(12, 0x48..).unwrap().node_id(), 0x063);
+        assert_eq!(reg.request(12, 0xa0..).unwrap().node_id(), 0x0a0);
+        assert_eq!(reg.request(12, 0xa0..).unwrap().node_id(), 0x0a1);
+
+        assert_eq!(reg.request(8, 0x10..).unwrap().node_id(), 0x10);
+        assert_eq!(reg.request(8, 0x10..).unwrap().node_id(), 0x11);
+        assert_eq!(reg.request(4, 0x1..).unwrap().node_id(), 0x2);
+        assert_eq!(reg.request(4, 0x0..).unwrap().node_id(), 0x3);
+
+        assert_eq!(reg.request(12, 0x600..).unwrap().node_id(), 0x600);
+        assert_eq!(reg.request(12, 0x600..).unwrap().node_id(), 0x601);
+        assert_eq!(reg.request(12, 0x234..).unwrap().node_id(), 0x400);
+        assert_eq!(reg.request(12, 0x234..).unwrap().node_id(), 0x401);
     }
 
     fn random_node_id_size(range: ops::Range<u8>) -> u8 {
