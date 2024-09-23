@@ -175,6 +175,20 @@ impl Registry {
             }
         }
     }
+
+    #[cfg(test)]
+    fn verify_inner(&self) {
+        let mut iter = self.inner.iter();
+        if let Some(mut prev) = iter.next() {
+            for curr in iter {
+                assert!(prev < curr);
+                let min = prev.node_id_size().min(curr.node_id_size());
+                assert!(prev.node_id_as(min) < curr.node_id_as(min));
+                assert!(prev.node_id_as(23) < curr.node_id_as(23));
+                prev = curr;
+            }
+        }
+    }
 }
 
 /// A packed and sortable internal representation of `node_id` and `node_id_size`.
@@ -189,10 +203,21 @@ pub struct NodeSpecPacked {
 
 impl NodeSpecPacked {
     pub fn new(node_spec: NodeSpec) -> Self {
-        Self {
-            inner: node_spec.node_id() << (32 - node_spec.node_id_size())
-                | u32::from(node_spec.node_id_size()),
+        let node_id = node_spec.node_id();
+        let node_id_size = node_spec.node_id_size();
+        let packed = Self {
+            inner: node_id << (32 - node_id_size) | u32::from(node_id_size),
+        };
+        #[cfg(test)]
+        {
+            assert_eq!(packed.node_id(), node_id);
+            assert_eq!(packed.node_id_size(), node_id_size);
+            let rotated = packed
+                .node_id_as(23)
+                .rotate_right(23 - u32::from(node_id_size));
+            assert_eq!(rotated, node_id);
         }
+        packed
     }
 
     fn node_id_size(self) -> u8 {
@@ -226,9 +251,7 @@ enum Availability {
 mod tests {
     use std::ops;
 
-    use scru64::generator::NodeSpec;
-
-    use super::{NodeSpecPacked, Registry};
+    use super::Registry;
 
     #[test]
     fn basic() {
@@ -236,13 +259,11 @@ mod tests {
         let mut reg = Registry::default();
 
         // request
-        let mut vec_reg = Vec::new();
         for _ in 0..N {
             let node_id_size = random_node_id_size(1..24);
             if let Ok(issued) = reg.request(node_id_size, ..) {
                 assert!(issued.node_prev().is_none());
                 assert_eq!(issued.node_id_size(), node_id_size);
-                vec_reg.push(pack_node_spec(issued));
             }
         }
         for _ in 0..N {
@@ -250,56 +271,36 @@ mod tests {
             if let Ok(issued) = reg.request(node_id_size, ..) {
                 assert!(issued.node_prev().is_none());
                 assert_eq!(issued.node_id_size(), node_id_size);
-                vec_reg.push(pack_node_spec(issued));
             }
         }
+        reg.verify_inner();
 
-        {
-            let len = vec_reg.len();
-            vec_reg.sort();
-            vec_reg.dedup();
-            assert_eq!(vec_reg.len(), len);
+        let values = Vec::from_iter(reg.iter());
+
+        // register and release
+        for &e in values.iter() {
+            let result = reg.register(e);
+            assert!(matches!(result, Ok(false)));
         }
+        assert!(reg.iter().eq(values.iter().copied()));
 
-        assert_eq!(reg.inner, vec_reg);
-        for window in vec_reg.windows(2) {
-            let (prev, curr) = (window[0], window[1]);
-            assert!(prev.node_id_as(23) < curr.node_id_as(23));
-            assert!(prev.node_id() < curr.node_id_as(prev.node_id_size()));
-            assert!(prev.node_id_as(curr.node_id_size()) < curr.node_id());
+        for &e in values.iter() {
+            let result = reg.release(e);
+            assert!(matches!(result, Ok(true)));
         }
-        assert!(reg.iter().eq(vec_reg.into_iter().map(NodeSpec::from)));
+        assert!(reg.iter().next().is_none());
 
-        {
-            let values = Vec::from_iter(reg.iter());
-
-            // register
-            for &e in values.iter() {
-                let result = reg.register(e);
-                assert!(matches!(result, Ok(false)));
-            }
-            assert!(reg.iter().eq(values.iter().copied()));
-
-            let mut reg_clone = Registry::default();
-            for &e in values.iter() {
-                let result = reg_clone.register(e);
-                assert!(matches!(result, Ok(true)));
-            }
-            assert!(reg.iter().eq(reg_clone.iter()));
-
-            // release
-            for &e in values.iter() {
-                let result = reg.release(e);
-                assert!(matches!(result, Ok(true)));
-            }
-            assert!(reg.iter().next().is_none());
-
-            for &e in values.iter() {
-                let result = reg.release(e);
-                assert!(matches!(result, Ok(false)));
-            }
-            assert!(reg.iter().next().is_none());
+        for &e in values.iter() {
+            let result = reg.release(e);
+            assert!(matches!(result, Ok(false)));
         }
+        assert!(reg.iter().next().is_none());
+
+        for &e in values.iter() {
+            let result = reg.register(e);
+            assert!(matches!(result, Ok(true)));
+        }
+        assert!(reg.iter().eq(values.iter().copied()));
     }
 
     #[test]
@@ -336,6 +337,8 @@ mod tests {
         assert_eq!(reg.request(4, 0x0..).unwrap().node_id(), 0x7);
         assert_eq!(reg.request(8, 0x78..).unwrap().node_id(), 0x80);
         assert_eq!(reg.request(12, 0x808..).unwrap().node_id(), 0x810);
+
+        reg.verify_inner();
     }
 
     fn random_node_id_size(range: ops::Range<u8>) -> u8 {
@@ -347,20 +350,5 @@ mod tests {
             }
         }
         unreachable!();
-    }
-
-    fn pack_node_spec(node_spec: NodeSpec) -> NodeSpecPacked {
-        let packed = NodeSpecPacked::new(node_spec);
-        let node_id = node_spec.node_id();
-        let node_id_size = node_spec.node_id_size();
-        assert_eq!(packed.node_id(), node_id);
-        assert_eq!(packed.node_id_size(), node_id_size);
-        assert_eq!(
-            packed
-                .node_id_as(23)
-                .rotate_right(23 - u32::from(node_id_size)),
-            node_id
-        );
-        packed
     }
 }
