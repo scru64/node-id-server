@@ -44,17 +44,22 @@ impl Registry {
             return Err(crate::Error("could not issue node_id: empty range"));
         }
 
+        // find index of start or, if not found, set cursor to immediately preceding position
         let mut cursor_pos = match range.start {
             0 => 0,
-            start => match NodeSpec::with_node_id(start, node_id_size) {
-                // find index of start or, if not found, set cursor to immediately preceding entry
-                Ok(node_spec) => match self.inner.binary_search(&NodeSpecPacked::new(node_spec)) {
-                    Ok(i) => i,
-                    Err(0) => 0,
-                    Err(i) => i - 1,
-                },
-                Err(_) => unreachable!(),
-            },
+            start => {
+                let needle =
+                    NodeSpecPacked::new(NodeSpec::with_node_id(start, node_id_size).unwrap());
+                match self.inner.back() {
+                    None => 0,
+                    Some(last) if last <= &needle => self.inner.len() - 1, // hot path
+                    Some(_) => match self.inner.binary_search(&needle) {
+                        Ok(i) => i,
+                        Err(0) => 0,
+                        Err(i) => i - 1,
+                    },
+                }
+            }
         };
 
         let mut cursor_val = range.start;
@@ -326,6 +331,11 @@ mod tests {
         assert_eq!(reg.request(12, 0x600..).unwrap().node_id(), 0x601);
         assert_eq!(reg.request(12, 0x234..).unwrap().node_id(), 0x400);
         assert_eq!(reg.request(12, 0x234..).unwrap().node_id(), 0x401);
+
+        assert_eq!(reg.request(4, 0x0..).unwrap().node_id(), 0x5);
+        assert_eq!(reg.request(4, 0x0..).unwrap().node_id(), 0x7);
+        assert_eq!(reg.request(8, 0x78..).unwrap().node_id(), 0x80);
+        assert_eq!(reg.request(12, 0x808..).unwrap().node_id(), 0x810);
     }
 
     fn random_node_id_size(range: ops::Range<u8>) -> u8 {
