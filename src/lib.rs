@@ -191,7 +191,7 @@ impl Engine {
     pub fn release(&mut self, node_spec: NodeSpec) -> Result<(), impl error::Error + Sync + Send> {
         let descrambled = self.scrambler.descramble(node_spec);
         match self.registry.release(descrambled) {
-            Ok(_) => {
+            Ok(true) => {
                 let needle = NodeSpecPacked::new(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
                     debug_assert!({
@@ -201,6 +201,13 @@ impl Engine {
                     });
                     self.expiry_que.remove(pos).unwrap();
                 }
+                Ok(())
+            }
+            Ok(false) => {
+                debug_assert!({
+                    let needle = NodeSpecPacked::new(descrambled);
+                    !self.expiry_que.iter().any(|e| e.1 == needle)
+                });
                 Ok(())
             }
             Err(err) => Err(err),
