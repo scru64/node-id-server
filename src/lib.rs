@@ -141,7 +141,7 @@ impl Engine {
             Ok(()) // newly registered
         } else {
             let now = time::SystemTime::now();
-            let needle = descrambled.into();
+            let needle = NodeSpecPacked::new(descrambled);
             if let Some(pos) = self
                 .expiry_que
                 .iter()
@@ -169,7 +169,7 @@ impl Engine {
         let expiry_time = time::SystemTime::now()
             .checked_add(time_to_live)
             .expect("time_to_live was so large that SystemTime overflowed");
-        let entry = (expiry_time, descrambled.into());
+        let entry = (expiry_time, NodeSpecPacked::new(descrambled));
         if self.expiry_que.back().is_some_and(|e| e < &entry) {
             self.expiry_que.push_back(entry); // shortcut for common pattern
         } else if let Err(index) = self.expiry_que.binary_search(&entry) {
@@ -192,7 +192,7 @@ impl Engine {
         let descrambled = self.scrambler.descramble(node_spec);
         match self.registry.release(descrambled) {
             Ok(_) => {
-                let needle = descrambled.into();
+                let needle = NodeSpecPacked::new(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
                     debug_assert!({
                         let mut iter = self.expiry_que.range(pos..).fuse();

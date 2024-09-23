@@ -48,7 +48,7 @@ impl Registry {
             0 => (0, 0),
             start => match NodeSpec::with_node_id(start, node_id_size) {
                 // find index of start or, if not found, set cursor to immediately preceding entry
-                Ok(node_spec) => match self.inner.binary_search(&node_spec.into()) {
+                Ok(node_spec) => match self.inner.binary_search(&NodeSpecPacked::new(node_spec)) {
                     Ok(i) => (i, range.start),
                     Err(0) => (0, range.start),
                     Err(i) => (i - 1, self.inner[i - 1].node_id_as(node_id_size)),
@@ -75,7 +75,8 @@ impl Registry {
 
         match NodeSpec::with_node_id(cursor_val, node_id_size) {
             Ok(node_spec) => {
-                self.inner.insert(cursor_pos, node_spec.into());
+                self.inner
+                    .insert(cursor_pos, NodeSpecPacked::new(node_spec));
                 Ok(node_spec)
             }
             Err(_) => unreachable!(),
@@ -93,7 +94,7 @@ impl Registry {
     /// Returns `Err` if the specified `node_id` cannot be inserted because it is reserved by a
     /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
     pub fn register(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        let node_spec = node_spec.into();
+        let node_spec = NodeSpecPacked::new(node_spec);
         match self.binary_search(node_spec) {
             Ok(_) => Ok(false),
             Err(Availability::Ok(index)) => {
@@ -121,7 +122,7 @@ impl Registry {
     /// Returns `Err` if the specified `node_id` cannot be released because it is reserved by a
     /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
     pub fn release(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        match self.binary_search(node_spec.into()) {
+        match self.binary_search(NodeSpecPacked::new(node_spec)) {
             Ok(index) => {
                 self.inner.remove(index).unwrap();
                 Ok(true)
@@ -180,6 +181,13 @@ pub struct NodeSpecPacked {
 }
 
 impl NodeSpecPacked {
+    pub fn new(node_spec: NodeSpec) -> Self {
+        Self {
+            inner: node_spec.node_id() << (32 - node_spec.node_id_size())
+                | u32::from(node_spec.node_id_size()),
+        }
+    }
+
     fn node_id_size(self) -> u8 {
         (self.inner & 0xff) as u8
     }
@@ -190,20 +198,7 @@ impl NodeSpecPacked {
 
     fn node_id_as(self, node_id_size: u8) -> u32 {
         assert!(0 < node_id_size && node_id_size < 24);
-        let ret = self.inner >> (32 - node_id_size);
-        debug_assert!(
-            ret.trailing_zeros() >= u32::from(node_id_size.saturating_sub(self.node_id_size())),
-            "constructors must ensure that unused bits are all set to zero"
-        );
-        ret
-    }
-}
-
-impl From<NodeSpec> for NodeSpecPacked {
-    fn from(value: NodeSpec) -> Self {
-        Self {
-            inner: value.node_id() << (32 - value.node_id_size()) | u32::from(value.node_id_size()),
-        }
+        self.inner >> (32 - node_id_size)
     }
 }
 
