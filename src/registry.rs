@@ -214,3 +214,110 @@ enum Availability {
     HasParent,
     HasChild,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ops;
+
+    use scru64::generator::NodeSpec;
+
+    use super::{NodeSpecPacked, Registry};
+
+    #[test]
+    fn basic() {
+        const N: usize = 40_000;
+        let mut reg = Registry::default();
+
+        // request
+        let mut vec_reg = Vec::new();
+        for _ in 0..N {
+            let node_id_size = random_node_id_size(1..24);
+            if let Ok(issued) = reg.request(node_id_size, ..) {
+                assert!(issued.node_prev().is_none());
+                assert_eq!(issued.node_id_size(), node_id_size);
+                vec_reg.push(pack_node_spec(issued));
+            }
+        }
+        for _ in 0..N {
+            let node_id_size = random_node_id_size(1..16);
+            if let Ok(issued) = reg.request(node_id_size, ..) {
+                assert!(issued.node_prev().is_none());
+                assert_eq!(issued.node_id_size(), node_id_size);
+                vec_reg.push(pack_node_spec(issued));
+            }
+        }
+
+        {
+            let len = vec_reg.len();
+            vec_reg.sort();
+            vec_reg.dedup();
+            assert_eq!(vec_reg.len(), len);
+        }
+
+        assert_eq!(reg.inner, vec_reg);
+        for window in vec_reg.windows(2) {
+            let (prev, curr) = (window[0], window[1]);
+            assert!(prev.node_id_as(23) < curr.node_id_as(23));
+            assert!(prev.node_id() < curr.node_id_as(prev.node_id_size()));
+            assert!(prev.node_id_as(curr.node_id_size()) < curr.node_id());
+        }
+        assert!(reg.iter().eq(vec_reg.into_iter().map(NodeSpec::from)));
+
+        {
+            let values = Vec::from_iter(reg.iter());
+
+            // register
+            for &e in values.iter() {
+                let result = reg.register(e);
+                assert!(matches!(result, Ok(false)));
+            }
+            assert!(reg.iter().eq(values.iter().copied()));
+
+            let mut reg_clone = Registry::default();
+            for &e in values.iter() {
+                let result = reg_clone.register(e);
+                assert!(matches!(result, Ok(true)));
+            }
+            assert!(reg.iter().eq(reg_clone.iter()));
+
+            // release
+            for &e in values.iter() {
+                let result = reg.release(e);
+                assert!(matches!(result, Ok(true)));
+            }
+            assert!(reg.iter().next().is_none());
+
+            for &e in values.iter() {
+                let result = reg.release(e);
+                assert!(matches!(result, Ok(false)));
+            }
+            assert!(reg.iter().next().is_none());
+        }
+    }
+
+    fn random_node_id_size(range: ops::Range<u8>) -> u8 {
+        let end = range.end - range.start - 1;
+        let random = rand::random::<u32>() >> (32 - end);
+        for i in 0..=end {
+            if random < (1u32 << i) {
+                return range.start + i;
+            }
+        }
+        unreachable!();
+    }
+
+    fn pack_node_spec(node_spec: NodeSpec) -> NodeSpecPacked {
+        let packed = NodeSpecPacked::new(node_spec);
+        let node_id = node_spec.node_id();
+        let node_id_size = node_spec.node_id_size();
+        assert_eq!(packed.node_id(), node_id);
+        assert_eq!(packed.node_id_size(), node_id_size);
+        assert_eq!(
+            packed
+                .node_id_as(23)
+                .rotate_right(23 - u32::from(node_id_size)),
+            node_id
+        );
+        packed
+    }
+}
