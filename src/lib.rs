@@ -94,13 +94,18 @@ impl Engine {
         assert!(0 < node_id_size && node_id_size < 24);
         let cursor_index = usize::from(node_id_size) - 1;
 
-        let issued = self
-            .registry
-            .request(node_id_size, self.cursors[cursor_index]..)
-            .or_else(|_| {
-                self.vacuum();
+        let cursor = self.cursors[cursor_index];
+        let issued = self.registry.request(node_id_size, cursor..).or_else(|_| {
+            let old_len = self.expiry_que.len();
+            self.vacuum();
+            if self.expiry_que.len() < old_len {
+                // vacuum() might have released items in cursor..
                 self.registry.request(node_id_size, ..)
-            })?;
+            } else {
+                // vacuum() did not release anything
+                self.registry.request(node_id_size, ..cursor)
+            }
+        })?;
 
         self.cursors[cursor_index] = issued.node_id();
         Ok(issued)
@@ -220,7 +225,10 @@ impl Engine {
         let now = time::SystemTime::now();
         while let Some(front) = self.expiry_que.front() {
             if front.0 < now {
-                let _ = self.registry.release(front.1.into());
+                match self.registry.release(front.1.into()) {
+                    Ok(true) => {}
+                    _ => unreachable!(),
+                }
                 self.expiry_que.pop_front().unwrap();
             } else {
                 break;

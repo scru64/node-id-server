@@ -156,20 +156,18 @@ impl Registry {
             Ok(index) => Ok(index),
             Err(index) => {
                 if index > 0 {
-                    let prev = self.inner[index - 1];
-                    let min = needle.node_id_size().min(prev.node_id_size());
-                    if needle.node_id_as(min) == prev.node_id_as(min) {
-                        return Err(Availability::HasParent);
+                    match needle.cmp_as_min(&self.inner[index - 1]) {
+                        cmp::Ordering::Less => unreachable!(),
+                        cmp::Ordering::Equal => return Err(Availability::HasParent),
+                        cmp::Ordering::Greater => {}
                     }
-                    debug_assert!(needle.node_id_as(min) > prev.node_id_as(min));
                 }
                 if index < self.inner.len() {
-                    let next = self.inner[index];
-                    let min = needle.node_id_size().min(next.node_id_size());
-                    if needle.node_id_as(min) == next.node_id_as(min) {
-                        return Err(Availability::HasChild);
+                    match needle.cmp_as_min(&self.inner[index]) {
+                        cmp::Ordering::Less => {}
+                        cmp::Ordering::Equal => return Err(Availability::HasChild),
+                        cmp::Ordering::Greater => unreachable!(),
                     }
-                    debug_assert!(needle.node_id_as(min) < next.node_id_as(min));
                 }
                 Err(Availability::Ok(index))
             }
@@ -182,8 +180,7 @@ impl Registry {
         if let Some(mut prev) = iter.next() {
             for curr in iter {
                 assert!(prev < curr);
-                let min = prev.node_id_size().min(curr.node_id_size());
-                assert!(prev.node_id_as(min) < curr.node_id_as(min));
+                assert!(prev.cmp_as_min(curr).is_lt());
                 assert!(prev.node_id_as(23) < curr.node_id_as(23));
                 prev = curr;
             }
@@ -231,6 +228,11 @@ impl NodeSpecPacked {
     fn node_id_as(self, node_id_size: u8) -> u32 {
         assert!(0 < node_id_size && node_id_size < 24);
         self.inner >> (32 - node_id_size)
+    }
+
+    fn cmp_as_min(&self, other: &Self) -> cmp::Ordering {
+        let min = cmp::min(self.node_id_size(), other.node_id_size());
+        self.node_id_as(min).cmp(&other.node_id_as(min))
     }
 }
 
