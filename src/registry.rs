@@ -101,18 +101,15 @@ impl Registry {
     /// Returns `Err` if the specified `node_id` cannot be inserted because it is reserved by a
     /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
     pub fn register(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        let node_spec = NodeSpecPacked::new(node_spec);
-        match self.binary_search(node_spec) {
-            Ok(_) => Ok(false),
-            Err(Availability::Ok(index)) => {
-                self.inner.insert(index, node_spec);
-                Ok(true)
-            }
-            Err(Availability::HasParent) => {
-                Err(crate::Error("could not register node_id: parent exists"))
-            }
-            Err(Availability::HasChild) => {
-                Err(crate::Error("could not register node_id: child exists"))
+        let mut cursor = self.select(node_spec);
+        match cursor.insert() {
+            Ok(_) => Ok(true),
+            Err(_) => {
+                if cursor.matches() {
+                    Ok(false)
+                } else {
+                    Err(crate::Error("could not register node_id"))
+                }
             }
         }
     }
@@ -129,17 +126,15 @@ impl Registry {
     /// Returns `Err` if the specified `node_id` cannot be released because it is reserved by a
     /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
     pub fn release(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        match self.binary_search(NodeSpecPacked::new(node_spec)) {
-            Ok(index) => {
-                self.inner.remove(index).unwrap();
-                Ok(true)
-            }
-            Err(Availability::Ok(_)) => Ok(false),
-            Err(Availability::HasParent) => {
-                Err(crate::Error("could not release node_id: parent exists"))
-            }
-            Err(Availability::HasChild) => {
-                Err(crate::Error("could not release node_id: child exists"))
+        let mut cursor = self.select(node_spec);
+        match cursor.remove() {
+            Ok(_) => Ok(true),
+            Err(_) => {
+                if cursor.can_insert() {
+                    Ok(false)
+                } else {
+                    Err(crate::Error("could not release node_id"))
+                }
             }
         }
     }
@@ -149,28 +144,14 @@ impl Registry {
         self.inner.iter().map(|&n| n.into())
     }
 
-    /// Searches the index of `needle` in the list, returning `Ok(index)` if found or otherwise
-    /// `Err` that indicates whether the `needle` can be inserted into the list.
-    fn binary_search(&mut self, needle: NodeSpecPacked) -> Result<usize, Availability> {
-        match self.inner.binary_search(&needle) {
-            Ok(index) => Ok(index),
-            Err(index) => {
-                if index > 0 {
-                    match needle.cmp_as_min(&self.inner[index - 1]) {
-                        cmp::Ordering::Less => unreachable!(),
-                        cmp::Ordering::Equal => return Err(Availability::HasParent),
-                        cmp::Ordering::Greater => {}
-                    }
-                }
-                if index < self.inner.len() {
-                    match needle.cmp_as_min(&self.inner[index]) {
-                        cmp::Ordering::Less => {}
-                        cmp::Ordering::Equal => return Err(Availability::HasChild),
-                        cmp::Ordering::Greater => unreachable!(),
-                    }
-                }
-                Err(Availability::Ok(index))
-            }
+    /// Searches the index of `needle` in the list, returning a cursor to manipulate the element at
+    /// the position without breaking the order of elements.
+    fn select(&mut self, needle: NodeSpec) -> RegistryCursor {
+        let value = NodeSpecPacked::new(needle);
+        RegistryCursor {
+            position: self.inner.binary_search(&value),
+            value,
+            inner: &mut self.inner,
         }
     }
 
@@ -184,6 +165,65 @@ impl Registry {
                 assert!(prev.node_id_as(23) < curr.node_id_as(23));
                 prev = curr;
             }
+        }
+    }
+}
+
+/// A cursor to insert or remove a value into/from `Registry` while maintaining the uniqueness and
+/// order of elements.
+#[derive(Debug)]
+struct RegistryCursor<'r> {
+    position: Result<usize, usize>,
+    value: NodeSpecPacked,
+    inner: &'r mut collections::VecDeque<NodeSpecPacked>,
+}
+
+impl RegistryCursor<'_> {
+    fn matches(&self) -> bool {
+        self.position.is_ok()
+    }
+
+    fn can_insert(&self) -> bool {
+        let index = match self.position {
+            Ok(_) => return false,
+            Err(index) => index,
+        };
+
+        if index > 0 {
+            match self.value.cmp_as_min(&self.inner[index - 1]) {
+                cmp::Ordering::Less => unreachable!(),
+                cmp::Ordering::Equal => return false,
+                cmp::Ordering::Greater => {}
+            }
+        }
+        if index < self.inner.len() {
+            match self.value.cmp_as_min(&self.inner[index]) {
+                cmp::Ordering::Less => {}
+                cmp::Ordering::Equal => return false,
+                cmp::Ordering::Greater => unreachable!(),
+            }
+        }
+        true
+    }
+
+    fn insert(&mut self) -> Result<(), crate::Error> {
+        if self.can_insert() {
+            let index = self.position.unwrap_err();
+            self.inner.insert(index, self.value);
+            self.position = Ok(index);
+            Ok(())
+        } else {
+            Err(crate::Error("could not insert node_id"))
+        }
+    }
+
+    fn remove(&mut self) -> Result<(), crate::Error> {
+        if let Ok(index) = self.position {
+            self.inner.remove(index).unwrap();
+            self.position = Err(index);
+            Ok(())
+        } else {
+            Err(crate::Error("could not remove node_id"))
         }
     }
 }
@@ -240,13 +280,6 @@ impl From<NodeSpecPacked> for NodeSpec {
     fn from(value: NodeSpecPacked) -> Self {
         NodeSpec::with_node_id(value.node_id(), value.node_id_size()).unwrap()
     }
-}
-
-#[derive(Debug)]
-enum Availability {
-    Ok(usize),
-    HasParent,
-    HasChild,
 }
 
 #[cfg(test)]
