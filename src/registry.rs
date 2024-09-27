@@ -90,55 +90,6 @@ impl Registry {
         }
     }
 
-    /// Inserts the specified `node_id` into the list of active `node_id`s.
-    ///
-    /// This function returns `Ok` if the specified `node_id` has been successfully inserted, no
-    /// matter whether it was inserted by the current function call (indicated by `Ok(true)`) or it
-    /// had been already inserted (indicated by `Ok(false)`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the specified `node_id` cannot be inserted because it is reserved by a
-    /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
-    pub fn register(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        let mut cursor = self.select(node_spec);
-        match cursor.insert() {
-            Ok(_) => Ok(true),
-            Err(_) => {
-                if cursor.matches() {
-                    Ok(false)
-                } else {
-                    Err(crate::Error("could not register node_id"))
-                }
-            }
-        }
-    }
-
-    /// Removes the specified `node_id` from the list of active `node_id`s.
-    ///
-    /// This function returns `Ok` if the specified `node_id` has been successfully released and is
-    /// available for subsequent `request`s, no matter whether it was released by the current
-    /// function call (indicated by `Ok(true)`) or it had been already released (indicated by
-    /// `Ok(false)`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the specified `node_id` cannot be released because it is reserved by a
-    /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
-    pub fn release(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        let mut cursor = self.select(node_spec);
-        match cursor.remove() {
-            Ok(_) => Ok(true),
-            Err(_) => {
-                if cursor.can_insert() {
-                    Ok(false)
-                } else {
-                    Err(crate::Error("could not release node_id"))
-                }
-            }
-        }
-    }
-
     /// Returns an iterator over currently active `node_id`s.
     pub fn iter(&self) -> impl Iterator<Item = NodeSpec> + '_ {
         self.inner.iter().map(|&n| n.into())
@@ -146,7 +97,7 @@ impl Registry {
 
     /// Searches the index of `needle` in the list, returning a cursor to manipulate the element at
     /// the position without breaking the order of elements.
-    fn select(&mut self, needle: NodeSpec) -> RegistryCursor {
+    pub fn select(&mut self, needle: NodeSpec) -> RegistryCursor {
         let value = NodeSpecPacked::new(needle);
         RegistryCursor {
             position: self.inner.binary_search(&value),
@@ -172,18 +123,18 @@ impl Registry {
 /// A cursor to insert or remove a value into/from `Registry` while maintaining the uniqueness and
 /// order of elements.
 #[derive(Debug)]
-struct RegistryCursor<'r> {
+pub struct RegistryCursor<'r> {
     position: Result<usize, usize>,
     value: NodeSpecPacked,
     inner: &'r mut collections::VecDeque<NodeSpecPacked>,
 }
 
 impl RegistryCursor<'_> {
-    fn matches(&self) -> bool {
+    pub fn matches(&self) -> bool {
         self.position.is_ok()
     }
 
-    fn can_insert(&self) -> bool {
+    pub fn can_insert(&self) -> bool {
         let index = match self.position {
             Ok(_) => return false,
             Err(index) => index,
@@ -206,7 +157,7 @@ impl RegistryCursor<'_> {
         true
     }
 
-    fn insert(&mut self) -> Result<(), crate::Error> {
+    pub fn insert(&mut self) -> Result<(), crate::Error> {
         if self.can_insert() {
             let index = self.position.unwrap_err();
             self.inner.insert(index, self.value);
@@ -217,7 +168,7 @@ impl RegistryCursor<'_> {
         }
     }
 
-    fn remove(&mut self) -> Result<(), crate::Error> {
+    pub fn remove(&mut self) -> Result<(), crate::Error> {
         if let Ok(index) = self.position {
             self.inner.remove(index).unwrap();
             self.position = Err(index);
@@ -314,26 +265,42 @@ mod tests {
 
         // register and release
         for &e in values.iter() {
-            let result = reg.register(e);
-            assert!(matches!(result, Ok(false)));
+            let mut cursor = reg.select(e);
+            assert!(cursor.matches());
+            assert!(!cursor.can_insert());
+            let result = cursor.insert();
+            assert!(result.is_err());
         }
         assert!(reg.iter().eq(values.iter().copied()));
 
         for &e in values.iter() {
-            let result = reg.release(e);
-            assert!(matches!(result, Ok(true)));
+            let mut cursor = reg.select(e);
+            assert!(cursor.matches());
+            assert!(!cursor.can_insert());
+            let result = cursor.remove();
+            assert!(result.is_ok());
+            assert!(!cursor.matches());
+            assert!(cursor.can_insert());
         }
         assert!(reg.iter().next().is_none());
 
         for &e in values.iter() {
-            let result = reg.release(e);
-            assert!(matches!(result, Ok(false)));
+            let mut cursor = reg.select(e);
+            assert!(!cursor.matches());
+            assert!(cursor.can_insert());
+            let result = cursor.remove();
+            assert!(result.is_err());
         }
         assert!(reg.iter().next().is_none());
 
         for &e in values.iter() {
-            let result = reg.register(e);
-            assert!(matches!(result, Ok(true)));
+            let mut cursor = reg.select(e);
+            assert!(!cursor.matches());
+            assert!(cursor.can_insert());
+            let result = cursor.insert();
+            assert!(result.is_ok());
+            assert!(cursor.matches());
+            assert!(!cursor.can_insert());
         }
         assert!(reg.iter().eq(values.iter().copied()));
     }
