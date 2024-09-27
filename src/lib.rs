@@ -142,10 +142,10 @@ impl Engine {
     }
 
     fn request_one_inner(&mut self, descrambled: NodeSpec) -> Result<(), crate::Error> {
-        let mut cursor = self.registry.select(descrambled);
-        match cursor.insert() {
+        let mut selected = self.registry.select(descrambled);
+        match selected.insert() {
             Ok(_) => Ok(()), // newly registered
-            Err(_) if cursor.matches() => {
+            Err(_) if selected.exists() => {
                 let now = time::SystemTime::now();
                 let needle = NodeSpecPacked::new(descrambled);
                 if let Some(pos) = self
@@ -198,8 +198,8 @@ impl Engine {
     /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
     pub fn release(&mut self, node_spec: NodeSpec) -> Result<(), impl error::Error + Sync + Send> {
         let descrambled = self.scrambler.descramble(node_spec);
-        let mut cursor = self.registry.select(descrambled);
-        match cursor.remove() {
+        let mut selected = self.registry.select(descrambled);
+        match selected.remove() {
             Ok(_) => {
                 let needle = NodeSpecPacked::new(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
@@ -212,7 +212,7 @@ impl Engine {
                 }
                 Ok(())
             }
-            Err(_) if cursor.can_insert() => {
+            Err(_) if selected.is_insertable() => {
                 debug_assert!({
                     let needle = NodeSpecPacked::new(descrambled);
                     !self.expiry_que.iter().any(|e| e.1 == needle)

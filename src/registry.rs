@@ -95,14 +95,14 @@ impl Registry {
         self.inner.iter().map(|&n| n.into())
     }
 
-    /// Searches the index of `needle` in the list, returning a cursor to manipulate the element at
-    /// the position without breaking the order of elements.
-    pub fn select(&mut self, needle: NodeSpec) -> RegistryCursor {
+    /// Searches the `needle` in the list, returning a handle to insert or remove the selected
+    /// value without breaking the uniqueness and order of elements.
+    pub fn select(&mut self, needle: NodeSpec) -> Selected {
         let value = NodeSpecPacked::new(needle);
-        RegistryCursor {
-            position: self.inner.binary_search(&value),
+        Selected {
             value,
-            inner: &mut self.inner,
+            position: self.inner.binary_search(&value),
+            registry: &mut self.inner,
         }
     }
 
@@ -120,35 +120,37 @@ impl Registry {
     }
 }
 
-/// A cursor to insert or remove a value into/from `Registry` while maintaining the uniqueness and
-/// order of elements.
+/// A handle to insert or remove the selected value into/from `Registry` while maintaining the
+/// uniqueness and order of elements.
 #[derive(Debug)]
-pub struct RegistryCursor<'r> {
-    position: Result<usize, usize>,
+pub struct Selected<'r> {
     value: NodeSpecPacked,
-    inner: &'r mut collections::VecDeque<NodeSpecPacked>,
+    position: Result<usize, usize>,
+    registry: &'r mut collections::VecDeque<NodeSpecPacked>,
 }
 
-impl RegistryCursor<'_> {
-    pub fn matches(&self) -> bool {
+impl Selected<'_> {
+    /// Returns `true` if the selected value exists in the `Registry`.
+    pub fn exists(&self) -> bool {
         self.position.is_ok()
     }
 
-    pub fn can_insert(&self) -> bool {
+    /// Returns `true` if the selected value can be inserted into the `Registry`.
+    pub fn is_insertable(&self) -> bool {
         let index = match self.position {
             Ok(_) => return false,
             Err(index) => index,
         };
 
         if index > 0 {
-            match self.value.cmp_as_min(&self.inner[index - 1]) {
+            match self.value.cmp_as_min(&self.registry[index - 1]) {
                 cmp::Ordering::Less => unreachable!(),
                 cmp::Ordering::Equal => return false,
                 cmp::Ordering::Greater => {}
             }
         }
-        if index < self.inner.len() {
-            match self.value.cmp_as_min(&self.inner[index]) {
+        if index < self.registry.len() {
+            match self.value.cmp_as_min(&self.registry[index]) {
                 cmp::Ordering::Less => {}
                 cmp::Ordering::Equal => return false,
                 cmp::Ordering::Greater => unreachable!(),
@@ -157,24 +159,35 @@ impl RegistryCursor<'_> {
         true
     }
 
+    /// Tries to insert the selected value into the `Registry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the selected value cannot be inserted because inserting it would result in
+    /// conflict or overlap with other existing `node_id`s.
     pub fn insert(&mut self) -> Result<(), crate::Error> {
-        if self.can_insert() {
+        if self.is_insertable() {
             let index = self.position.unwrap_err();
-            self.inner.insert(index, self.value);
+            self.registry.insert(index, self.value);
             self.position = Ok(index);
             Ok(())
         } else {
-            Err(crate::Error("could not insert node_id"))
+            Err(crate::Error("could not insert node_id: would overlap"))
         }
     }
 
+    /// Tries to remove the selected value from the `Registry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the selected value does not exist in the `Registry`.
     pub fn remove(&mut self) -> Result<(), crate::Error> {
         if let Ok(index) = self.position {
-            self.inner.remove(index).unwrap();
+            self.registry.remove(index).unwrap();
             self.position = Err(index);
             Ok(())
         } else {
-            Err(crate::Error("could not remove node_id"))
+            Err(crate::Error("could not remove node_id: not found"))
         }
     }
 }
@@ -265,42 +278,42 @@ mod tests {
 
         // register and release
         for &e in values.iter() {
-            let mut cursor = reg.select(e);
-            assert!(cursor.matches());
-            assert!(!cursor.can_insert());
-            let result = cursor.insert();
+            let mut selected = reg.select(e);
+            assert!(selected.exists());
+            assert!(!selected.is_insertable());
+            let result = selected.insert();
             assert!(result.is_err());
         }
         assert!(reg.iter().eq(values.iter().copied()));
 
         for &e in values.iter() {
-            let mut cursor = reg.select(e);
-            assert!(cursor.matches());
-            assert!(!cursor.can_insert());
-            let result = cursor.remove();
+            let mut selected = reg.select(e);
+            assert!(selected.exists());
+            assert!(!selected.is_insertable());
+            let result = selected.remove();
             assert!(result.is_ok());
-            assert!(!cursor.matches());
-            assert!(cursor.can_insert());
+            assert!(!selected.exists());
+            assert!(selected.is_insertable());
         }
         assert!(reg.iter().next().is_none());
 
         for &e in values.iter() {
-            let mut cursor = reg.select(e);
-            assert!(!cursor.matches());
-            assert!(cursor.can_insert());
-            let result = cursor.remove();
+            let mut selected = reg.select(e);
+            assert!(!selected.exists());
+            assert!(selected.is_insertable());
+            let result = selected.remove();
             assert!(result.is_err());
         }
         assert!(reg.iter().next().is_none());
 
         for &e in values.iter() {
-            let mut cursor = reg.select(e);
-            assert!(!cursor.matches());
-            assert!(cursor.can_insert());
-            let result = cursor.insert();
+            let mut selected = reg.select(e);
+            assert!(!selected.exists());
+            assert!(selected.is_insertable());
+            let result = selected.insert();
             assert!(result.is_ok());
-            assert!(cursor.matches());
-            assert!(!cursor.can_insert());
+            assert!(selected.exists());
+            assert!(!selected.is_insertable());
         }
         assert!(reg.iter().eq(values.iter().copied()));
     }
