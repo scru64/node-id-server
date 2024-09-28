@@ -182,23 +182,7 @@ impl Engine {
             }
             Err(_) => {
                 let old_len = self.expiry_que.len();
-
-                // expire conflicting items
-                let now = time::SystemTime::now();
-                let needle = NodeSpecPacked::new(descrambled);
-                let mut i = 0;
-                while i < self.expiry_que.len() {
-                    let e = self.expiry_que[i];
-                    if e.0 < now {
-                        if e.1.cmp_as_min(&needle).is_eq() {
-                            self.registry.select(e.1.into()).remove().unwrap();
-                        } else {
-                            i += 1;
-                        }
-                    } else {
-                        break;
-                    }
-                }
+                self.vacuum_conflicting(descrambled);
 
                 // retry if something was removed
                 if self.expiry_que.len() < old_len
@@ -262,7 +246,19 @@ impl Engine {
                 });
                 Ok(())
             }
-            Err(_) => Err(crate::Error("could not release node_id: would overlap")),
+            Err(_) => {
+                let old_len = self.expiry_que.len();
+                self.vacuum_conflicting(descrambled);
+
+                // retry if something was removed
+                if self.expiry_que.len() < old_len
+                    && self.registry.select(descrambled).is_insertable()
+                {
+                    Ok(())
+                } else {
+                    Err(crate::Error("could not release node_id: would overlap"))
+                }
+            }
         }
     }
 
@@ -274,6 +270,25 @@ impl Engine {
             if front.0 < now {
                 let front = self.expiry_que.pop_front().unwrap();
                 self.registry.select(front.1.into()).remove().unwrap();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn vacuum_conflicting(&mut self, descrambled: NodeSpec) {
+        let needle = NodeSpecPacked::new(descrambled);
+        let now = time::SystemTime::now();
+        let mut i = 0;
+        while i < self.expiry_que.len() {
+            let e = self.expiry_que[i];
+            if e.0 < now {
+                if e.1.cmp_as_min(&needle).is_eq() {
+                    self.registry.select(e.1.into()).remove().unwrap();
+                    self.expiry_que.remove(i).unwrap();
+                } else {
+                    i += 1;
+                }
             } else {
                 break;
             }
