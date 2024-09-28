@@ -96,14 +96,41 @@ impl Registry {
     }
 
     /// Searches the `needle` in the list, returning a handle to insert or remove the selected
-    /// value without breaking the uniqueness and order of elements.
+    /// value without breaking the uniqueness and order of `node_id`s.
     pub fn select(&mut self, needle: NodeSpec) -> Selected {
         let value = NodeSpecPacked::new(needle);
         Selected {
             value,
             position: self.inner.binary_search(&value),
-            registry: &mut self.inner,
+            registry: self,
         }
+    }
+
+    /// Tests if the specified `value` can be stored at `Ok(position)` or inserted before
+    /// `Err(position)` without breaking the uniqueness and order of `node_id`s.
+    ///
+    /// `position` typically is a result of `VecDeque::binary_search()`.
+    fn check_new_value(&self, value: NodeSpecPacked, position: Result<usize, usize>) -> bool {
+        let (current, next) = match position {
+            Ok(index) => (index, index + 1),
+            Err(index) => (index, index),
+        };
+
+        if current > 0 {
+            match value.cmp_as_min(&self.inner[current - 1]) {
+                cmp::Ordering::Less => unreachable!(),
+                cmp::Ordering::Equal => return false,
+                cmp::Ordering::Greater => {}
+            }
+        }
+        if next < self.inner.len() {
+            match value.cmp_as_min(&self.inner[next]) {
+                cmp::Ordering::Less => {}
+                cmp::Ordering::Equal => return false,
+                cmp::Ordering::Greater => unreachable!(),
+            }
+        }
+        true
     }
 
     #[cfg(test)]
@@ -121,12 +148,15 @@ impl Registry {
 }
 
 /// A handle to insert or remove the selected value into/from `Registry` while maintaining the
-/// uniqueness and order of elements.
+/// uniqueness and order of `node_id`s.
+///
+/// This structure is primarily meant to cache a result of expensive binary search while holding
+/// the reference to `Registry` so the result won't be invalidated by other operations.
 #[derive(Debug)]
 pub struct Selected<'r> {
     value: NodeSpecPacked,
     position: Result<usize, usize>,
-    registry: &'r mut collections::VecDeque<NodeSpecPacked>,
+    registry: &'r mut Registry,
 }
 
 impl Selected<'_> {
@@ -137,26 +167,10 @@ impl Selected<'_> {
 
     /// Returns `true` if the selected value can be inserted into the `Registry`.
     pub fn is_insertable(&self) -> bool {
-        let index = match self.position {
-            Ok(_) => return false,
-            Err(index) => index,
-        };
-
-        if index > 0 {
-            match self.value.cmp_as_min(&self.registry[index - 1]) {
-                cmp::Ordering::Less => unreachable!(),
-                cmp::Ordering::Equal => return false,
-                cmp::Ordering::Greater => {}
-            }
+        match self.position {
+            Ok(_) => false,
+            Err(_) => self.registry.check_new_value(self.value, self.position),
         }
-        if index < self.registry.len() {
-            match self.value.cmp_as_min(&self.registry[index]) {
-                cmp::Ordering::Less => {}
-                cmp::Ordering::Equal => return false,
-                cmp::Ordering::Greater => unreachable!(),
-            }
-        }
-        true
     }
 
     /// Tries to insert the selected value into the `Registry`.
@@ -168,7 +182,7 @@ impl Selected<'_> {
     pub fn insert(&mut self) -> Result<(), crate::Error> {
         if self.is_insertable() {
             let index = self.position.unwrap_err();
-            self.registry.insert(index, self.value);
+            self.registry.inner.insert(index, self.value);
             self.position = Ok(index);
             Ok(())
         } else {
@@ -183,7 +197,7 @@ impl Selected<'_> {
     /// Returns `Err` if the selected value does not exist in the `Registry`.
     pub fn remove(&mut self) -> Result<(), crate::Error> {
         if let Ok(index) = self.position {
-            self.registry.remove(index).unwrap();
+            self.registry.inner.remove(index).unwrap();
             self.position = Err(index);
             Ok(())
         } else {
