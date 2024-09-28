@@ -169,7 +169,7 @@ impl Selected<'_> {
     pub fn is_insertable(&self) -> bool {
         match self.position {
             Ok(_) => false,
-            Err(_) => self.registry.check_new_value(self.value, self.position),
+            Err(index) => self.registry.check_new_value(self.value, Err(index)),
         }
     }
 
@@ -214,23 +214,20 @@ impl Selected<'_> {
     /// would result in conflict or overlap with other existing `node_id`s.
     pub fn transmute(&mut self, new_node_id_size: u8) -> Result<NodeSpec, crate::Error> {
         assert!(0 < new_node_id_size && new_node_id_size < 24);
-        match self.position {
-            Ok(index) => {
-                let new_spec = NodeSpec::with_node_id(
-                    self.value.node_id_as(new_node_id_size),
-                    new_node_id_size,
-                )
-                .unwrap();
-                let new_spec_packed = NodeSpecPacked::new(new_spec);
-                if self.registry.check_new_value(new_spec_packed, Ok(index)) {
-                    self.registry.inner[index] = new_spec_packed;
-                    self.value = new_spec_packed;
-                    Ok(new_spec)
-                } else {
-                    Err(crate::Error("could not transmute node_id: would overlap"))
-                }
+        if let Ok(index) = self.position {
+            let new_spec =
+                NodeSpec::with_node_id(self.value.node_id_as(new_node_id_size), new_node_id_size)
+                    .unwrap();
+            let new_spec_packed = NodeSpecPacked::new(new_spec);
+            if self.registry.check_new_value(new_spec_packed, Ok(index)) {
+                self.registry.inner[index] = new_spec_packed;
+                self.value = new_spec_packed;
+                Ok(new_spec)
+            } else {
+                Err(crate::Error("could not transmute node_id: would overlap"))
             }
-            Err(_) => Err(crate::Error("could not transmute node_id: not found")),
+        } else {
+            Err(crate::Error("could not transmute node_id: not found"))
         }
     }
 }
