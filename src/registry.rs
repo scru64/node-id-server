@@ -90,88 +90,47 @@ impl Registry {
         }
     }
 
-    /// Inserts the specified `node_id` into the list of active `node_id`s.
-    ///
-    /// This function returns `Ok` if the specified `node_id` has been successfully inserted, no
-    /// matter whether it was inserted by the current function call (indicated by `Ok(true)`) or it
-    /// had been already inserted (indicated by `Ok(false)`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the specified `node_id` cannot be inserted because it is reserved by a
-    /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
-    pub fn register(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        let node_spec = NodeSpecPacked::new(node_spec);
-        match self.binary_search(node_spec) {
-            Ok(_) => Ok(false),
-            Err(Availability::Ok(index)) => {
-                self.inner.insert(index, node_spec);
-                Ok(true)
-            }
-            Err(Availability::HasParent) => {
-                Err(crate::Error("could not register node_id: parent exists"))
-            }
-            Err(Availability::HasChild) => {
-                Err(crate::Error("could not register node_id: child exists"))
-            }
-        }
-    }
-
-    /// Removes the specified `node_id` from the list of active `node_id`s.
-    ///
-    /// This function returns `Ok` if the specified `node_id` has been successfully released and is
-    /// available for subsequent `request`s, no matter whether it was released by the current
-    /// function call (indicated by `Ok(true)`) or it had been already released (indicated by
-    /// `Ok(false)`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the specified `node_id` cannot be released because it is reserved by a
-    /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
-    pub fn release(&mut self, node_spec: NodeSpec) -> Result<bool, crate::Error> {
-        match self.binary_search(NodeSpecPacked::new(node_spec)) {
-            Ok(index) => {
-                self.inner.remove(index).unwrap();
-                Ok(true)
-            }
-            Err(Availability::Ok(_)) => Ok(false),
-            Err(Availability::HasParent) => {
-                Err(crate::Error("could not release node_id: parent exists"))
-            }
-            Err(Availability::HasChild) => {
-                Err(crate::Error("could not release node_id: child exists"))
-            }
-        }
-    }
-
     /// Returns an iterator over currently active `node_id`s.
     pub fn iter(&self) -> impl Iterator<Item = NodeSpec> + '_ {
         self.inner.iter().map(|&n| n.into())
     }
 
-    /// Searches the index of `needle` in the list, returning `Ok(index)` if found or otherwise
-    /// `Err` that indicates whether the `needle` can be inserted into the list.
-    fn binary_search(&mut self, needle: NodeSpecPacked) -> Result<usize, Availability> {
-        match self.inner.binary_search(&needle) {
-            Ok(index) => Ok(index),
-            Err(index) => {
-                if index > 0 {
-                    match needle.cmp_as_min(&self.inner[index - 1]) {
-                        cmp::Ordering::Less => unreachable!(),
-                        cmp::Ordering::Equal => return Err(Availability::HasParent),
-                        cmp::Ordering::Greater => {}
-                    }
-                }
-                if index < self.inner.len() {
-                    match needle.cmp_as_min(&self.inner[index]) {
-                        cmp::Ordering::Less => {}
-                        cmp::Ordering::Equal => return Err(Availability::HasChild),
-                        cmp::Ordering::Greater => unreachable!(),
-                    }
-                }
-                Err(Availability::Ok(index))
+    /// Searches the `needle` in the list, returning a handle to insert or remove the selected
+    /// value without breaking the uniqueness and order of `node_id`s.
+    pub fn select(&mut self, needle: NodeSpec) -> Selected {
+        let value = NodeSpecPacked::new(needle);
+        Selected {
+            value,
+            position: self.inner.binary_search(&value),
+            registry: self,
+        }
+    }
+
+    /// Tests if the specified `value` can be stored at `Ok(position)` or inserted before
+    /// `Err(position)` without breaking the uniqueness and order of `node_id`s.
+    ///
+    /// `position` typically is a result of `VecDeque::binary_search()`.
+    fn check_new_value(&self, value: NodeSpecPacked, position: Result<usize, usize>) -> bool {
+        let (current, next) = match position {
+            Ok(index) => (index, index + 1),
+            Err(index) => (index, index),
+        };
+
+        if current > 0 {
+            match value.cmp_as_min(&self.inner[current - 1]) {
+                cmp::Ordering::Less => unreachable!(),
+                cmp::Ordering::Equal => return false,
+                cmp::Ordering::Greater => {}
             }
         }
+        if next < self.inner.len() {
+            match value.cmp_as_min(&self.inner[next]) {
+                cmp::Ordering::Less => {}
+                cmp::Ordering::Equal => return false,
+                cmp::Ordering::Greater => unreachable!(),
+            }
+        }
+        true
     }
 
     #[cfg(test)]
@@ -184,6 +143,91 @@ impl Registry {
                 assert!(prev.node_id_as(23) < curr.node_id_as(23));
                 prev = curr;
             }
+        }
+    }
+}
+
+/// A handle to insert or remove the selected value into/from `Registry` while maintaining the
+/// uniqueness and order of `node_id`s.
+///
+/// This structure is primarily meant to cache a result of expensive binary search while holding
+/// the reference to `Registry` so the result won't be invalidated by other operations.
+#[derive(Debug)]
+pub struct Selected<'r> {
+    value: NodeSpecPacked,
+    position: Result<usize, usize>,
+    registry: &'r mut Registry,
+}
+
+impl Selected<'_> {
+    /// Returns `true` if the selected value exists in the `Registry`.
+    pub fn exists(&self) -> bool {
+        self.position.is_ok()
+    }
+
+    /// Returns `true` if the selected value can be inserted into the `Registry`.
+    pub fn is_insertable(&self) -> bool {
+        match self.position {
+            Ok(_) => false,
+            Err(index) => self.registry.check_new_value(self.value, Err(index)),
+        }
+    }
+
+    /// Tries to insert the selected value into the `Registry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the selected value cannot be inserted because doing so would result in
+    /// conflict or overlap with other existing `node_id`s.
+    pub fn insert(&mut self) -> Result<(), crate::Error> {
+        if self.is_insertable() {
+            let index = self.position.unwrap_err();
+            self.registry.inner.insert(index, self.value);
+            self.position = Ok(index);
+            Ok(())
+        } else {
+            Err(crate::Error("could not insert node_id: would overlap"))
+        }
+    }
+
+    /// Tries to remove the selected value from the `Registry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the selected value does not exist in the `Registry`.
+    pub fn remove(&mut self) -> Result<(), crate::Error> {
+        if let Ok(index) = self.position {
+            self.registry.inner.remove(index).unwrap();
+            self.position = Err(index);
+            Ok(())
+        } else {
+            Err(crate::Error("could not remove node_id: not found"))
+        }
+    }
+
+    /// Reinterprets the selected value as that of `new_node_id_size`, returning the reinterpreted
+    /// value on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the selected value does not exist or cannot be transmuted because doing so
+    /// would result in conflict or overlap with other existing `node_id`s.
+    pub fn transmute(&mut self, new_node_id_size: u8) -> Result<NodeSpec, crate::Error> {
+        assert!(0 < new_node_id_size && new_node_id_size < 24);
+        if let Ok(index) = self.position {
+            let new_spec =
+                NodeSpec::with_node_id(self.value.node_id_as(new_node_id_size), new_node_id_size)
+                    .unwrap();
+            let new_spec_packed = NodeSpecPacked::new(new_spec);
+            if self.registry.check_new_value(new_spec_packed, Ok(index)) {
+                self.registry.inner[index] = new_spec_packed;
+                self.value = new_spec_packed;
+                Ok(new_spec)
+            } else {
+                Err(crate::Error("could not transmute node_id: would overlap"))
+            }
+        } else {
+            Err(crate::Error("could not transmute node_id: not found"))
         }
     }
 }
@@ -242,13 +286,6 @@ impl From<NodeSpecPacked> for NodeSpec {
     }
 }
 
-#[derive(Debug)]
-enum Availability {
-    Ok(usize),
-    HasParent,
-    HasChild,
-}
-
 #[cfg(test)]
 mod tests {
     use std::ops;
@@ -281,26 +318,42 @@ mod tests {
 
         // register and release
         for &e in values.iter() {
-            let result = reg.register(e);
-            assert!(matches!(result, Ok(false)));
+            let mut selected = reg.select(e);
+            assert!(selected.exists());
+            assert!(!selected.is_insertable());
+            let result = selected.insert();
+            assert!(result.is_err());
         }
         assert!(reg.iter().eq(values.iter().copied()));
 
         for &e in values.iter() {
-            let result = reg.release(e);
-            assert!(matches!(result, Ok(true)));
+            let mut selected = reg.select(e);
+            assert!(selected.exists());
+            assert!(!selected.is_insertable());
+            let result = selected.remove();
+            assert!(result.is_ok());
+            assert!(!selected.exists());
+            assert!(selected.is_insertable());
         }
         assert!(reg.iter().next().is_none());
 
         for &e in values.iter() {
-            let result = reg.release(e);
-            assert!(matches!(result, Ok(false)));
+            let mut selected = reg.select(e);
+            assert!(!selected.exists());
+            assert!(selected.is_insertable());
+            let result = selected.remove();
+            assert!(result.is_err());
         }
         assert!(reg.iter().next().is_none());
 
         for &e in values.iter() {
-            let result = reg.register(e);
-            assert!(matches!(result, Ok(true)));
+            let mut selected = reg.select(e);
+            assert!(!selected.exists());
+            assert!(selected.is_insertable());
+            let result = selected.insert();
+            assert!(result.is_ok());
+            assert!(selected.exists());
+            assert!(!selected.is_insertable());
         }
         assert!(reg.iter().eq(values.iter().copied()));
     }
@@ -339,6 +392,45 @@ mod tests {
         assert_eq!(reg.request(4, 0x0..).unwrap().node_id(), 0x7);
         assert_eq!(reg.request(8, 0x78..).unwrap().node_id(), 0x80);
         assert_eq!(reg.request(12, 0x808..).unwrap().node_id(), 0x810);
+
+        reg.verify_inner();
+    }
+
+    #[test]
+    fn transmute() {
+        let mut reg = Registry::default();
+
+        assert!(reg.select("0x02/8".parse().unwrap()).transmute(8).is_err());
+
+        for i in 0..16 {
+            reg.request(8, i..).unwrap();
+            reg.request(12, i..).unwrap();
+        }
+
+        assert_eq!(
+            reg.select("0x02/8".parse().unwrap()).transmute(8).unwrap(),
+            "0x02/8".parse().unwrap()
+        );
+        assert_eq!(
+            reg.select("0x02/8".parse().unwrap()).transmute(12).unwrap(),
+            "0x020/12".parse().unwrap()
+        );
+        assert_eq!(
+            reg.select("0x020/12".parse().unwrap())
+                .transmute(8)
+                .unwrap(),
+            "0x02/8".parse().unwrap()
+        );
+        assert!(reg.select("0x02/8".parse().unwrap()).transmute(4).is_err());
+
+        assert!(reg
+            .select("0x010/12".parse().unwrap())
+            .transmute(8)
+            .is_err());
+        assert!(reg
+            .select("0x01f/12".parse().unwrap())
+            .transmute(8)
+            .is_err());
 
         reg.verify_inner();
     }

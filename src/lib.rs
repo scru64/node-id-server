@@ -97,12 +97,27 @@ impl Engine {
         let cursor = self.cursors[cursor_index];
         let issued = self.registry.request(node_id_size, cursor..).or_else(|_| {
             let old_len = self.expiry_que.len();
-            self.vacuum();
+
+            // vacuum, but reuse an expired item if possible
+            let now = time::SystemTime::now();
+            while let Some(front) = self.expiry_que.front() {
+                if front.0 < now {
+                    let front = self.expiry_que.pop_front().unwrap();
+                    let mut selected = self.registry.select(front.1.into());
+                    match selected.transmute(node_id_size) {
+                        Ok(reused) => return Ok(reused),
+                        Err(_) => selected.remove().unwrap(),
+                    }
+                } else {
+                    break;
+                }
+            }
+
             if self.expiry_que.len() < old_len {
-                // vacuum() might have released items in cursor..
+                // vacuum might have released items in (cursor..)
                 self.registry.request(node_id_size, ..)
             } else {
-                // vacuum() did not release anything
+                // vacuum did not release anything
                 self.registry.request(node_id_size, ..cursor)
             }
         })?;
@@ -142,27 +157,30 @@ impl Engine {
     }
 
     fn request_one_inner(&mut self, descrambled: NodeSpec) -> Result<(), crate::Error> {
-        if self.registry.register(descrambled)? {
-            Ok(()) // newly registered
-        } else {
-            let now = time::SystemTime::now();
-            let needle = NodeSpecPacked::new(descrambled);
-            if let Some(pos) = self
-                .expiry_que
-                .iter()
-                .take_while(|e| e.0 < now)
-                .position(|e| e.1 == needle)
-            {
-                debug_assert!({
-                    let mut iter = self.expiry_que.range(pos..).fuse();
-                    let _ = iter.next();
-                    !iter.any(|e| e.1 == needle)
-                });
-                self.expiry_que.remove(pos).unwrap();
-                Ok(()) // existing one was expired
-            } else {
-                Err(crate::Error("could not reserve node_id: already taken"))
+        let mut selected = self.registry.select(descrambled);
+        match selected.insert() {
+            Ok(_) => Ok(()), // newly registered
+            Err(_) if selected.exists() => {
+                let now = time::SystemTime::now();
+                let needle = NodeSpecPacked::new(descrambled);
+                if let Some(pos) = self
+                    .expiry_que
+                    .iter()
+                    .take_while(|e| e.0 < now)
+                    .position(|e| e.1 == needle)
+                {
+                    debug_assert!({
+                        let mut iter = self.expiry_que.range(pos..).fuse();
+                        let _ = iter.next();
+                        !iter.any(|e| e.1 == needle)
+                    });
+                    self.expiry_que.remove(pos).unwrap();
+                    Ok(()) // existing one was expired
+                } else {
+                    Err(crate::Error("could not reserve node_id: already taken"))
+                }
             }
+            Err(_) => Err(crate::Error("could not reserve node_id: would overlap")),
         }
     }
 
@@ -195,8 +213,9 @@ impl Engine {
     /// "parent" `node_id` or is an intermediate `node_id` with "child" `node_id`s.
     pub fn release(&mut self, node_spec: NodeSpec) -> Result<(), impl error::Error + Sync + Send> {
         let descrambled = self.scrambler.descramble(node_spec);
-        match self.registry.release(descrambled) {
-            Ok(true) => {
+        let mut selected = self.registry.select(descrambled);
+        match selected.remove() {
+            Ok(_) => {
                 let needle = NodeSpecPacked::new(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
                     debug_assert!({
@@ -208,14 +227,14 @@ impl Engine {
                 }
                 Ok(())
             }
-            Ok(false) => {
+            Err(_) if selected.is_insertable() => {
                 debug_assert!({
                     let needle = NodeSpecPacked::new(descrambled);
                     !self.expiry_que.iter().any(|e| e.1 == needle)
                 });
                 Ok(())
             }
-            Err(err) => Err(err),
+            Err(_) => Err(crate::Error("could not release node_id: would overlap")),
         }
     }
 
@@ -225,11 +244,8 @@ impl Engine {
         let now = time::SystemTime::now();
         while let Some(front) = self.expiry_que.front() {
             if front.0 < now {
-                match self.registry.release(front.1.into()) {
-                    Ok(true) => {}
-                    _ => unreachable!(),
-                }
-                self.expiry_que.pop_front().unwrap();
+                let front = self.expiry_que.pop_front().unwrap();
+                self.registry.select(front.1.into()).remove().unwrap();
             } else {
                 break;
             }
