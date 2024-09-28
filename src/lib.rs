@@ -180,7 +180,35 @@ impl Engine {
                     Err(crate::Error("could not reserve node_id: already taken"))
                 }
             }
-            Err(_) => Err(crate::Error("could not reserve node_id: would overlap")),
+            Err(_) => {
+                let old_len = self.expiry_que.len();
+
+                // expire conflicting items
+                let now = time::SystemTime::now();
+                let needle = NodeSpecPacked::new(descrambled);
+                let mut i = 0;
+                while i < self.expiry_que.len() {
+                    let e = self.expiry_que[i];
+                    if e.0 < now {
+                        if e.1.cmp_as_min(&needle).is_eq() {
+                            self.registry.select(e.1.into()).remove().unwrap();
+                        } else {
+                            i += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // retry if something was removed
+                if self.expiry_que.len() < old_len
+                    && self.registry.select(descrambled).insert().is_ok()
+                {
+                    Ok(())
+                } else {
+                    Err(crate::Error("could not reserve node_id: would overlap"))
+                }
+            }
         }
     }
 
