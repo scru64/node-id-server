@@ -9,7 +9,7 @@ use super::NodeSpec;
 #[serde(transparent)]
 pub struct Registry {
     /// A sorted set of active `node_id`s.
-    inner: collections::VecDeque<NodeSpecPacked>,
+    inner: collections::VecDeque<NodeIdWithSize>,
 }
 
 impl Registry {
@@ -48,8 +48,9 @@ impl Registry {
         let mut cursor_pos = match range.start {
             0 => 0,
             start => {
-                let needle =
-                    NodeSpecPacked::new(NodeSpec::with_node_id(start, node_id_size).unwrap());
+                let needle = NodeIdWithSize::from_node_spec_lossy(
+                    NodeSpec::with_node_id(start, node_id_size).unwrap(),
+                );
                 match self.inner.back() {
                     None => 0,
                     Some(last) if last <= &needle => self.inner.len() - 1, // hot path
@@ -83,10 +84,21 @@ impl Registry {
         match NodeSpec::with_node_id(cursor_val, node_id_size) {
             Ok(node_spec) => {
                 self.inner
-                    .insert(cursor_pos, NodeSpecPacked::new(node_spec));
+                    .insert(cursor_pos, NodeIdWithSize::from_node_spec_lossy(node_spec));
                 Ok(node_spec)
             }
             Err(_) => unreachable!(),
+        }
+    }
+
+    /// Searches the `needle` in the list, returning a handle to insert or remove the selected
+    /// value without breaking the uniqueness and order of `node_id`s.
+    pub fn select(&mut self, needle: NodeSpec) -> Selected {
+        let value = NodeIdWithSize::from_node_spec_lossy(needle);
+        Selected {
+            value,
+            position: self.inner.binary_search(&value),
+            registry: self,
         }
     }
 
@@ -95,22 +107,11 @@ impl Registry {
         self.inner.iter().map(|&n| n.into())
     }
 
-    /// Searches the `needle` in the list, returning a handle to insert or remove the selected
-    /// value without breaking the uniqueness and order of `node_id`s.
-    pub fn select(&mut self, needle: NodeSpec) -> Selected {
-        let value = NodeSpecPacked::new(needle);
-        Selected {
-            value,
-            position: self.inner.binary_search(&value),
-            registry: self,
-        }
-    }
-
     /// Tests if the specified `value` can be stored at `Ok(position)` or inserted before
     /// `Err(position)` without breaking the uniqueness and order of `node_id`s.
     ///
     /// `position` typically is a result of `VecDeque::binary_search()`.
-    fn check_new_value(&self, value: NodeSpecPacked, position: Result<usize, usize>) -> bool {
+    fn check_new_value(&self, value: NodeIdWithSize, position: Result<usize, usize>) -> bool {
         let (current, next) = match position {
             Ok(index) => (index, index + 1),
             Err(index) => (index, index),
@@ -154,7 +155,7 @@ impl Registry {
 /// the reference to `Registry` so the result won't be invalidated by other operations.
 #[derive(Debug)]
 pub struct Selected<'r> {
-    value: NodeSpecPacked,
+    value: NodeIdWithSize,
     position: Result<usize, usize>,
     registry: &'r mut Registry,
 }
@@ -218,10 +219,10 @@ impl Selected<'_> {
             let new_spec =
                 NodeSpec::with_node_id(self.value.node_id_as(new_node_id_size), new_node_id_size)
                     .unwrap();
-            let new_spec_packed = NodeSpecPacked::new(new_spec);
-            if self.registry.check_new_value(new_spec_packed, Ok(index)) {
-                self.registry.inner[index] = new_spec_packed;
-                self.value = new_spec_packed;
+            let new_id_with_size = NodeIdWithSize::from_node_spec_lossy(new_spec);
+            if self.registry.check_new_value(new_id_with_size, Ok(index)) {
+                self.registry.inner[index] = new_id_with_size;
+                self.value = new_id_with_size;
                 Ok(new_spec)
             } else {
                 Err(crate::Error("could not transmute node_id: would overlap"))
@@ -232,33 +233,33 @@ impl Selected<'_> {
     }
 }
 
-/// A packed and sortable internal representation of `node_id` and `node_id_size`.
+/// A packed and sortable internal representation of `node_id` and `node_id_size` pair.
 #[derive(
     Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct NodeSpecPacked {
+pub(crate) struct NodeIdWithSize {
     inner: u32,
 }
 
-impl NodeSpecPacked {
-    pub fn new(node_spec: NodeSpec) -> Self {
+impl NodeIdWithSize {
+    pub fn from_node_spec_lossy(node_spec: NodeSpec) -> Self {
         let node_id = node_spec.node_id();
         let node_id_size = node_spec.node_id_size();
-        let packed = Self {
+        let value = Self {
             inner: node_id << (32 - node_id_size) | u32::from(node_id_size),
         };
         #[cfg(test)]
         {
-            assert_eq!(packed.node_id(), node_id);
-            assert_eq!(packed.node_id_size(), node_id_size);
-            let rotated = packed
+            assert_eq!(value.node_id(), node_id);
+            assert_eq!(value.node_id_size(), node_id_size);
+            let rotated = value
                 .node_id_as(23)
                 .rotate_right(23 - u32::from(node_id_size));
             assert_eq!(rotated, node_id);
         }
-        packed
+        value
     }
 
     fn node_id_size(self) -> u8 {
@@ -280,8 +281,8 @@ impl NodeSpecPacked {
     }
 }
 
-impl From<NodeSpecPacked> for NodeSpec {
-    fn from(value: NodeSpecPacked) -> Self {
+impl From<NodeIdWithSize> for NodeSpec {
+    fn from(value: NodeIdWithSize) -> Self {
         NodeSpec::with_node_id(value.node_id(), value.node_id_size()).unwrap()
     }
 }

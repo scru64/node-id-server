@@ -11,7 +11,7 @@ use std::{collections, error, fmt, time};
 use scru64::generator::NodeSpec;
 
 mod registry;
-use registry::{NodeSpecPacked, Registry};
+use registry::{NodeIdWithSize, Registry};
 
 /// The server engine.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -27,7 +27,7 @@ pub struct Engine {
     scrambler: Scrambler,
 
     /// A set of `node_id`s sorted by their respective expiry time.
-    expiry_que: collections::VecDeque<(time::SystemTime, NodeSpecPacked)>,
+    expiry_que: collections::VecDeque<(time::SystemTime, NodeIdWithSize)>,
 }
 
 impl Engine {
@@ -166,7 +166,7 @@ impl Engine {
             Ok(_) => Ok(()), // newly registered
             Err(_) if selected.exists() => {
                 let now = time::SystemTime::now();
-                let needle = NodeSpecPacked::new(descrambled);
+                let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                 if let Some(pos) = self
                     .expiry_que
                     .iter()
@@ -208,7 +208,10 @@ impl Engine {
         let expiry_time = time::SystemTime::now()
             .checked_add(time_to_live)
             .expect("time_to_live was so large that SystemTime overflowed");
-        let entry = (expiry_time, NodeSpecPacked::new(descrambled));
+        let entry = (
+            expiry_time,
+            NodeIdWithSize::from_node_spec_lossy(descrambled),
+        );
         if self.expiry_que.back().is_some_and(|e| e < &entry) {
             self.expiry_que.push_back(entry); // shortcut for common pattern
         } else if let Err(index) = self.expiry_que.binary_search(&entry) {
@@ -232,7 +235,7 @@ impl Engine {
         let mut selected = self.registry.select(descrambled);
         match selected.remove() {
             Ok(_) => {
-                let needle = NodeSpecPacked::new(descrambled);
+                let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
                     debug_assert!({
                         let mut iter = self.expiry_que.range(pos..).fuse();
@@ -245,7 +248,7 @@ impl Engine {
             }
             Err(_) if selected.is_insertable() => {
                 debug_assert!({
-                    let needle = NodeSpecPacked::new(descrambled);
+                    let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                     !self.expiry_que.iter().any(|e| e.1 == needle)
                 });
                 Ok(())
