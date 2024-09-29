@@ -356,11 +356,27 @@ impl fmt::Display for Error {
 
 impl error::Error for Error {}
 
+/// Returns `true` if two `node_id`s are overlapping with each other.
+///
+/// # Examples
+///
+/// ```rust
+/// use scru64_node_id_server::overlapping;
+///
+/// assert!(overlapping("0x8/4".parse()?, "0x84/8".parse()?));
+/// assert!(!overlapping("0x8/4".parse()?, "0x088/12".parse()?));
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
+pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
+    let (a, b) = (NodeSpecPacked::new(a), NodeSpecPacked::new(b));
+    a.cmp_as_min(&b).is_eq()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{thread, time};
 
-    use super::{Engine, NodeSpec, Scrambler};
+    use super::{overlapping, Engine, NodeSpec, Scrambler};
 
     #[test]
     fn basic() {
@@ -476,5 +492,20 @@ mod tests {
 
         eng.vacuum();
         assert!(eng.iter().next().is_none());
+    }
+
+    #[test]
+    fn fn_overlapping() {
+        fn test_pair(a: &str, b: &str) -> bool {
+            let (a, b) = (a.parse().unwrap(), b.parse().unwrap());
+            let (x, y) = (overlapping(a, b), overlapping(b, a));
+            assert_eq!(x, y);
+            x
+        }
+
+        assert!(test_pair("0x2/4", "0x21/8"));
+        assert!(test_pair("0x2/4", "0x22/8"));
+        assert!(!test_pair("0x2/4", "0x13/8"));
+        assert!(!test_pair("0x2/4", "0x44/8"));
     }
 }
