@@ -351,3 +351,126 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use std::{thread, time};
+
+    use super::{Engine, NodeSpec, Scrambler};
+
+    #[test]
+    fn basic() {
+        let node_id_size = 16;
+        let mut eng = Engine::default();
+
+        for i in 0..(1 << node_id_size) {
+            let node_spec = eng.request(node_id_size).unwrap();
+            assert_eq!(node_spec.node_id(), i);
+            assert_eq!(node_spec.node_id_size(), node_id_size);
+        }
+
+        for i in 1..24 {
+            assert!(eng.request(i).is_err());
+        }
+
+        for i in 0..(1 << node_id_size) {
+            let node_spec = NodeSpec::with_node_id(i, node_id_size).unwrap();
+            assert!(eng.request_one(node_spec).is_err());
+            assert!(eng.release(node_spec).is_ok());
+            assert!(eng.release(node_spec).is_ok());
+            assert!(eng.request_one(node_spec).is_ok());
+            assert!(eng.request_one(node_spec).is_err());
+        }
+        assert!(eng.request(node_id_size).is_err());
+    }
+
+    #[test]
+    fn with_scrambling() {
+        let node_id_size = 16;
+        let seed = rand::random();
+        let scrambler = Scrambler::from_seed(seed);
+        let mut eng = Engine::with_scrambling(seed);
+
+        for i in 0..(1 << node_id_size) {
+            let scrambled = eng.request(node_id_size).unwrap();
+            let descrambled = scrambler.descramble(scrambled);
+            assert_eq!(descrambled.node_id(), i);
+            assert_eq!(descrambled.node_id_size(), node_id_size);
+        }
+
+        for i in 1..24 {
+            assert!(eng.request(i).is_err());
+        }
+
+        for i in 0..(1 << node_id_size) {
+            let descrambled = NodeSpec::with_node_id(i, node_id_size).unwrap();
+            let scrambled = scrambler.scramble(descrambled);
+            assert!(eng.request_one(scrambled).is_err());
+            assert!(eng.release(scrambled).is_ok());
+            assert!(eng.release(scrambled).is_ok());
+            assert!(eng.request_one(scrambled).is_ok());
+            assert!(eng.request_one(scrambled).is_err());
+        }
+        assert!(eng.request(node_id_size).is_err());
+    }
+
+    #[test]
+    fn with_ttl() {
+        let node_id_size = 8;
+        let time_to_live = time::Duration::from_millis(64);
+        let mut eng = Engine::default();
+
+        for i in 0..(1 << node_id_size) {
+            let (node_spec, _) = eng.request_with_ttl(node_id_size, time_to_live).unwrap();
+            assert_eq!(node_spec.node_id(), i);
+            assert_eq!(node_spec.node_id_size(), node_id_size);
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        for _ in 0..(1 << node_id_size) {
+            assert!(eng.request_with_ttl(node_id_size, time_to_live).is_ok());
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        for i in 0..(1 << node_id_size) {
+            let node_spec = NodeSpec::with_node_id(i, node_id_size).unwrap();
+            assert!(eng.request_one_with_ttl(node_spec, time_to_live).is_ok());
+            assert!(eng.request_one_with_ttl(node_spec, time_to_live).is_err());
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        for _ in 0..(1 << (node_id_size - 4)) {
+            assert!(eng.request_with_ttl(node_id_size - 4, time_to_live).is_ok());
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        for _ in 0..(1 << (node_id_size + 4)) {
+            assert!(eng.request_with_ttl(node_id_size + 4, time_to_live).is_ok());
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        for i in 0..(1 << (node_id_size - 4)) {
+            let node_spec = NodeSpec::with_node_id(i, node_id_size - 4).unwrap();
+            assert!(eng.request_one_with_ttl(node_spec, time_to_live).is_ok());
+            assert!(eng.request_one_with_ttl(node_spec, time_to_live).is_err());
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        for i in 0..(1 << (node_id_size + 4)) {
+            let node_spec = NodeSpec::with_node_id(i, node_id_size + 4).unwrap();
+            assert!(eng.request_one_with_ttl(node_spec, time_to_live).is_ok());
+            assert!(eng.request_one_with_ttl(node_spec, time_to_live).is_err());
+        }
+        assert!(eng.request_with_ttl(node_id_size, time_to_live).is_err());
+        thread::sleep(time_to_live);
+
+        eng.vacuum();
+        assert!(eng.iter().next().is_none());
+    }
+}
