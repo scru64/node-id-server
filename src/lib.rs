@@ -95,7 +95,7 @@ impl Engine {
         let cursor_index = usize::from(node_id_size) - 1;
 
         let cursor = self.cursors[cursor_index];
-        let issued = self.registry.request(node_id_size, cursor..).or_else(|_| {
+        let result = self.registry.request(node_id_size, cursor..).or_else(|_| {
             let old_len = self.expiry_que.len();
 
             // vacuum, but reuse an expired item if possible
@@ -120,10 +120,14 @@ impl Engine {
                 // vacuum did not release anything
                 self.registry.request(node_id_size, ..cursor)
             }
-        })?;
+        });
 
-        self.cursors[cursor_index] = issued.node_id();
-        Ok(issued)
+        if let Ok(issued) = result {
+            self.cursors[cursor_index] = issued.node_id();
+            Ok(issued)
+        } else {
+            Err(crate::Error("could not issue node_id: no space"))
+        }
     }
 
     /// Requests a specified `node_id`.
