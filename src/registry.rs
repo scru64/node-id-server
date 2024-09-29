@@ -274,7 +274,7 @@ impl NodeSpecPacked {
         self.inner >> (32 - node_id_size)
     }
 
-    pub(crate) fn cmp_as_min(&self, other: &Self) -> cmp::Ordering {
+    fn cmp_as_min(&self, other: &Self) -> cmp::Ordering {
         let min = cmp::min(self.node_id_size(), other.node_id_size());
         self.node_id_as(min).cmp(&other.node_id_as(min))
     }

@@ -281,14 +281,13 @@ impl Engine {
     }
 
     fn vacuum_conflicting(&mut self, descrambled: NodeSpec) {
-        let needle = NodeSpecPacked::new(descrambled);
         let now = time::SystemTime::now();
         let mut i = 0;
         while i < self.expiry_que.len() {
-            let e = self.expiry_que[i];
-            if e.0 < now {
-                if e.1.cmp_as_min(&needle).is_eq() {
-                    self.registry.select(e.1.into()).remove().unwrap();
+            if self.expiry_que[i].0 < now {
+                let expired = self.expiry_que[i].1.into();
+                if overlapping(expired, descrambled) {
+                    self.registry.select(expired).remove().unwrap();
                     self.expiry_que.remove(i).unwrap();
                 } else {
                     i += 1;
@@ -368,8 +367,8 @@ impl error::Error for Error {}
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
-    let (a, b) = (NodeSpecPacked::new(a), NodeSpecPacked::new(b));
-    a.cmp_as_min(&b).is_eq()
+    let min = a.node_id_size().min(b.node_id_size());
+    (a.node_id() >> (a.node_id_size() - min)) == (b.node_id() >> (b.node_id_size() - min))
 }
 
 #[cfg(test)]
