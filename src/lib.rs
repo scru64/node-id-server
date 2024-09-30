@@ -10,8 +10,8 @@ use std::{collections, error, fmt, time};
 
 use scru64::generator::NodeSpec;
 
-mod registry;
-use registry::{NodeSpecPacked, Registry};
+pub mod registry;
+use registry::{NodeIdWithSize, Registry};
 
 /// The server engine.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -27,7 +27,7 @@ pub struct Engine {
     scrambler: Scrambler,
 
     /// A set of `node_id`s sorted by their respective expiry time.
-    expiry_que: collections::VecDeque<(time::SystemTime, NodeSpecPacked)>,
+    expiry_que: collections::VecDeque<(time::SystemTime, NodeIdWithSize)>,
 }
 
 impl Engine {
@@ -115,7 +115,7 @@ impl Engine {
 
             if self.expiry_que.len() < old_len {
                 // vacuum might have released items in (cursor..)
-                self.registry.request(node_id_size, ..)
+                self.registry.request(node_id_size, ..(1 << node_id_size))
             } else {
                 // vacuum did not release anything
                 self.registry.request(node_id_size, ..cursor)
@@ -166,7 +166,7 @@ impl Engine {
             Ok(_) => Ok(()), // newly registered
             Err(_) if selected.exists() => {
                 let now = time::SystemTime::now();
-                let needle = NodeSpecPacked::new(descrambled);
+                let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                 if let Some(pos) = self
                     .expiry_que
                     .iter()
@@ -208,7 +208,10 @@ impl Engine {
         let expiry_time = time::SystemTime::now()
             .checked_add(time_to_live)
             .expect("time_to_live was so large that SystemTime overflowed");
-        let entry = (expiry_time, NodeSpecPacked::new(descrambled));
+        let entry = (
+            expiry_time,
+            NodeIdWithSize::from_node_spec_lossy(descrambled),
+        );
         if self.expiry_que.back().is_some_and(|e| e < &entry) {
             self.expiry_que.push_back(entry); // shortcut for common pattern
         } else if let Err(index) = self.expiry_que.binary_search(&entry) {
@@ -232,7 +235,7 @@ impl Engine {
         let mut selected = self.registry.select(descrambled);
         match selected.remove() {
             Ok(_) => {
-                let needle = NodeSpecPacked::new(descrambled);
+                let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
                     debug_assert!({
                         let mut iter = self.expiry_que.range(pos..).fuse();
@@ -245,7 +248,7 @@ impl Engine {
             }
             Err(_) if selected.is_insertable() => {
                 debug_assert!({
-                    let needle = NodeSpecPacked::new(descrambled);
+                    let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                     !self.expiry_que.iter().any(|e| e.1 == needle)
                 });
                 Ok(())
@@ -281,14 +284,13 @@ impl Engine {
     }
 
     fn vacuum_conflicting(&mut self, descrambled: NodeSpec) {
-        let needle = NodeSpecPacked::new(descrambled);
         let now = time::SystemTime::now();
         let mut i = 0;
         while i < self.expiry_que.len() {
-            let e = self.expiry_que[i];
-            if e.0 < now {
-                if e.1.cmp_as_min(&needle).is_eq() {
-                    self.registry.select(e.1.into()).remove().unwrap();
+            if self.expiry_que[i].0 < now {
+                let expired = self.expiry_que[i].1.into();
+                if overlapping(expired, descrambled) {
+                    self.registry.select(expired).remove().unwrap();
                     self.expiry_que.remove(i).unwrap();
                 } else {
                     i += 1;
@@ -368,8 +370,8 @@ impl error::Error for Error {}
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
-    let (a, b) = (NodeSpecPacked::new(a), NodeSpecPacked::new(b));
-    a.cmp_as_min(&b).is_eq()
+    let min = a.node_id_size().min(b.node_id_size());
+    (a.node_id() >> (a.node_id_size() - min)) == (b.node_id() >> (b.node_id_size() - min))
 }
 
 #[cfg(test)]

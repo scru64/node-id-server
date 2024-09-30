@@ -1,15 +1,39 @@
-use std::{cmp, collections, ops};
+//! Low-level [`Registry`] data structure and related items.
+
+use std::{cmp, collections, error, ops};
 
 use super::NodeSpec;
 
-/// A structure that maintains the list of active `node_id`s by issuing new ones upon `request` and
-/// removing existing ones upon `release`.
+/// A low-level data structure that maintains the list of active `node_id`s.
+///
+/// # Examples
+///
+/// ```rust
+/// use scru64_node_id_server::registry::Registry;
+///
+/// let mut reg = Registry::default();
+/// let a = reg.request(4, ..)?;
+/// let b = reg.request(4, ..)?;
+/// let c = reg.request(8, ..)?;
+/// let d = reg.request(8, ..)?;
+/// let e = reg.request(12, ..)?;
+///
+/// assert_eq!((a.node_id(), a.node_id_size()), (0x0, 4));
+/// assert_eq!((b.node_id(), b.node_id_size()), (0x1, 4));
+/// assert_eq!((c.node_id(), c.node_id_size()), (0x20, 8));
+/// assert_eq!((d.node_id(), d.node_id_size()), (0x21, 8));
+/// assert_eq!((e.node_id(), e.node_id_size()), (0x220, 12));
+///
+/// reg.select("42/8".parse()?).insert()?;
+/// reg.select("42/8".parse()?).remove()?;
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct Registry {
     /// A sorted set of active `node_id`s.
-    inner: collections::VecDeque<NodeSpecPacked>,
+    inner: collections::VecDeque<NodeIdWithSize>,
 }
 
 impl Registry {
@@ -26,7 +50,7 @@ impl Registry {
         &mut self,
         node_id_size: u8,
         node_id_range: impl ops::RangeBounds<u32>,
-    ) -> Result<NodeSpec, crate::Error> {
+    ) -> Result<NodeSpec, impl error::Error + Sync + Send> {
         assert!(0 < node_id_size && node_id_size < 24);
 
         // express range in canonical half-open form (start..end)
@@ -48,8 +72,9 @@ impl Registry {
         let mut cursor_pos = match range.start {
             0 => 0,
             start => {
-                let needle =
-                    NodeSpecPacked::new(NodeSpec::with_node_id(start, node_id_size).unwrap());
+                let needle = NodeIdWithSize::from_node_spec_lossy(
+                    NodeSpec::with_node_id(start, node_id_size).unwrap(),
+                );
                 match self.inner.back() {
                     None => 0,
                     Some(last) if last <= &needle => self.inner.len() - 1, // hot path
@@ -83,10 +108,21 @@ impl Registry {
         match NodeSpec::with_node_id(cursor_val, node_id_size) {
             Ok(node_spec) => {
                 self.inner
-                    .insert(cursor_pos, NodeSpecPacked::new(node_spec));
+                    .insert(cursor_pos, NodeIdWithSize::from_node_spec_lossy(node_spec));
                 Ok(node_spec)
             }
             Err(_) => unreachable!(),
+        }
+    }
+
+    /// Searches the `needle` in the list, returning a handle to insert or remove the selected
+    /// value without breaking the uniqueness and order of `node_id`s.
+    pub fn select(&mut self, needle: NodeSpec) -> Selected {
+        let value = NodeIdWithSize::from_node_spec_lossy(needle);
+        Selected {
+            value,
+            position: self.inner.binary_search(&value),
+            registry: self,
         }
     }
 
@@ -95,22 +131,11 @@ impl Registry {
         self.inner.iter().map(|&n| n.into())
     }
 
-    /// Searches the `needle` in the list, returning a handle to insert or remove the selected
-    /// value without breaking the uniqueness and order of `node_id`s.
-    pub fn select(&mut self, needle: NodeSpec) -> Selected {
-        let value = NodeSpecPacked::new(needle);
-        Selected {
-            value,
-            position: self.inner.binary_search(&value),
-            registry: self,
-        }
-    }
-
     /// Tests if the specified `value` can be stored at `Ok(position)` or inserted before
     /// `Err(position)` without breaking the uniqueness and order of `node_id`s.
     ///
     /// `position` typically is a result of `VecDeque::binary_search()`.
-    fn check_new_value(&self, value: NodeSpecPacked, position: Result<usize, usize>) -> bool {
+    fn check_new_value(&self, value: NodeIdWithSize, position: Result<usize, usize>) -> bool {
         let (current, next) = match position {
             Ok(index) => (index, index + 1),
             Err(index) => (index, index),
@@ -147,25 +172,25 @@ impl Registry {
     }
 }
 
-/// A handle to insert or remove the selected value into/from `Registry` while maintaining the
+/// A handle to insert or remove the selected value into/from [`Registry`] while maintaining the
 /// uniqueness and order of `node_id`s.
 ///
 /// This structure is primarily meant to cache a result of expensive binary search while holding
 /// the reference to `Registry` so the result won't be invalidated by other operations.
 #[derive(Debug)]
 pub struct Selected<'r> {
-    value: NodeSpecPacked,
+    value: NodeIdWithSize,
     position: Result<usize, usize>,
     registry: &'r mut Registry,
 }
 
 impl Selected<'_> {
-    /// Returns `true` if the selected value exists in the `Registry`.
+    /// Returns `true` if the selected value exists in the [`Registry`].
     pub fn exists(&self) -> bool {
         self.position.is_ok()
     }
 
-    /// Returns `true` if the selected value can be inserted into the `Registry`.
+    /// Returns `true` if the selected value can be inserted into the [`Registry`].
     pub fn is_insertable(&self) -> bool {
         match self.position {
             Ok(_) => false,
@@ -173,13 +198,13 @@ impl Selected<'_> {
         }
     }
 
-    /// Tries to insert the selected value into the `Registry`.
+    /// Tries to insert the selected value into the [`Registry`].
     ///
     /// # Errors
     ///
     /// Returns `Err` if the selected value cannot be inserted because doing so would result in
     /// conflict or overlap with other existing `node_id`s.
-    pub fn insert(&mut self) -> Result<(), crate::Error> {
+    pub fn insert(&mut self) -> Result<(), impl error::Error + Sync + Send> {
         if self.is_insertable() {
             let index = self.position.unwrap_err();
             self.registry.inner.insert(index, self.value);
@@ -190,12 +215,12 @@ impl Selected<'_> {
         }
     }
 
-    /// Tries to remove the selected value from the `Registry`.
+    /// Tries to remove the selected value from the [`Registry`].
     ///
     /// # Errors
     ///
     /// Returns `Err` if the selected value does not exist in the `Registry`.
-    pub fn remove(&mut self) -> Result<(), crate::Error> {
+    pub fn remove(&mut self) -> Result<(), impl error::Error + Sync + Send> {
         if let Ok(index) = self.position {
             self.registry.inner.remove(index).unwrap();
             self.position = Err(index);
@@ -212,16 +237,19 @@ impl Selected<'_> {
     ///
     /// Returns `Err` if the selected value does not exist or cannot be transmuted because doing so
     /// would result in conflict or overlap with other existing `node_id`s.
-    pub fn transmute(&mut self, new_node_id_size: u8) -> Result<NodeSpec, crate::Error> {
+    pub fn transmute(
+        &mut self,
+        new_node_id_size: u8,
+    ) -> Result<NodeSpec, impl error::Error + Sync + Send> {
         assert!(0 < new_node_id_size && new_node_id_size < 24);
         if let Ok(index) = self.position {
             let new_spec =
                 NodeSpec::with_node_id(self.value.node_id_as(new_node_id_size), new_node_id_size)
                     .unwrap();
-            let new_spec_packed = NodeSpecPacked::new(new_spec);
-            if self.registry.check_new_value(new_spec_packed, Ok(index)) {
-                self.registry.inner[index] = new_spec_packed;
-                self.value = new_spec_packed;
+            let new_id_with_size = NodeIdWithSize::from_node_spec_lossy(new_spec);
+            if self.registry.check_new_value(new_id_with_size, Ok(index)) {
+                self.registry.inner[index] = new_id_with_size;
+                self.value = new_id_with_size;
                 Ok(new_spec)
             } else {
                 Err(crate::Error("could not transmute node_id: would overlap"))
@@ -232,33 +260,33 @@ impl Selected<'_> {
     }
 }
 
-/// A packed and sortable internal representation of `node_id` and `node_id_size`.
+/// A packed and sortable internal representation of `node_id` and `node_id_size` pair.
 #[derive(
     Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct NodeSpecPacked {
+pub(crate) struct NodeIdWithSize {
     inner: u32,
 }
 
-impl NodeSpecPacked {
-    pub fn new(node_spec: NodeSpec) -> Self {
+impl NodeIdWithSize {
+    pub fn from_node_spec_lossy(node_spec: NodeSpec) -> Self {
         let node_id = node_spec.node_id();
         let node_id_size = node_spec.node_id_size();
-        let packed = Self {
+        let value = Self {
             inner: node_id << (32 - node_id_size) | u32::from(node_id_size),
         };
         #[cfg(test)]
         {
-            assert_eq!(packed.node_id(), node_id);
-            assert_eq!(packed.node_id_size(), node_id_size);
-            let rotated = packed
+            assert_eq!(value.node_id(), node_id);
+            assert_eq!(value.node_id_size(), node_id_size);
+            let rotated = value
                 .node_id_as(23)
                 .rotate_right(23 - u32::from(node_id_size));
             assert_eq!(rotated, node_id);
         }
-        packed
+        value
     }
 
     fn node_id_size(self) -> u8 {
@@ -274,14 +302,14 @@ impl NodeSpecPacked {
         self.inner >> (32 - node_id_size)
     }
 
-    pub(crate) fn cmp_as_min(&self, other: &Self) -> cmp::Ordering {
+    fn cmp_as_min(&self, other: &Self) -> cmp::Ordering {
         let min = cmp::min(self.node_id_size(), other.node_id_size());
         self.node_id_as(min).cmp(&other.node_id_as(min))
     }
 }
 
-impl From<NodeSpecPacked> for NodeSpec {
-    fn from(value: NodeSpecPacked) -> Self {
+impl From<NodeIdWithSize> for NodeSpec {
+    fn from(value: NodeIdWithSize) -> Self {
         NodeSpec::with_node_id(value.node_id(), value.node_id_size()).unwrap()
     }
 }
