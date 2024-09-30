@@ -39,6 +39,11 @@ pub struct Registry {
 impl Registry {
     /// Issues a new `node_id` of the specified `node_id_size` within the given `node_id` range.
     ///
+    /// This method returns the smallest `node_id` available within the range by performaing a
+    /// linear search in the internal sorted list of active `node_id`s. Specifying an appropriate
+    /// start bound of `node_id_range` allows skipping the occupied region and may substantially
+    /// accelerate the linear search process.
+    ///
     /// # Errors
     ///
     /// Returns `Err` if no space for a new `node_id` is available within the range.
@@ -237,6 +242,10 @@ impl Selected<'_> {
     ///
     /// Returns `Err` if the selected value does not exist or cannot be transmuted because doing so
     /// would result in conflict or overlap with other existing `node_id`s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `new_node_id_size` is zero or greater than 23.
     pub fn transmute(
         &mut self,
         new_node_id_size: u8,
