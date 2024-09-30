@@ -1,9 +1,33 @@
-use std::{cmp, collections, ops};
+//! Low-level [`Registry`] data structure and related items.
+
+use std::{cmp, collections, error, ops};
 
 use super::NodeSpec;
 
-/// A structure that maintains the list of active `node_id`s by issuing new ones upon `request` and
-/// removing existing ones upon `release`.
+/// A low-level data structure that maintains the list of active `node_id`s.
+///
+/// # Examples
+///
+/// ```rust
+/// use scru64_node_id_server::registry::Registry;
+///
+/// let mut reg = Registry::default();
+/// let a = reg.request(4, ..)?;
+/// let b = reg.request(4, ..)?;
+/// let c = reg.request(8, ..)?;
+/// let d = reg.request(8, ..)?;
+/// let e = reg.request(12, ..)?;
+///
+/// assert_eq!((a.node_id(), a.node_id_size()), (0x0, 4));
+/// assert_eq!((b.node_id(), b.node_id_size()), (0x1, 4));
+/// assert_eq!((c.node_id(), c.node_id_size()), (0x20, 8));
+/// assert_eq!((d.node_id(), d.node_id_size()), (0x21, 8));
+/// assert_eq!((e.node_id(), e.node_id_size()), (0x220, 12));
+///
+/// reg.select("42/8".parse()?).insert()?;
+/// reg.select("42/8".parse()?).remove()?;
+/// # Ok::<_, Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[repr(transparent)]
 #[serde(transparent)]
@@ -26,7 +50,7 @@ impl Registry {
         &mut self,
         node_id_size: u8,
         node_id_range: impl ops::RangeBounds<u32>,
-    ) -> Result<NodeSpec, crate::Error> {
+    ) -> Result<NodeSpec, impl error::Error + Sync + Send> {
         assert!(0 < node_id_size && node_id_size < 24);
 
         // express range in canonical half-open form (start..end)
@@ -148,7 +172,7 @@ impl Registry {
     }
 }
 
-/// A handle to insert or remove the selected value into/from `Registry` while maintaining the
+/// A handle to insert or remove the selected value into/from [`Registry`] while maintaining the
 /// uniqueness and order of `node_id`s.
 ///
 /// This structure is primarily meant to cache a result of expensive binary search while holding
@@ -161,12 +185,12 @@ pub struct Selected<'r> {
 }
 
 impl Selected<'_> {
-    /// Returns `true` if the selected value exists in the `Registry`.
+    /// Returns `true` if the selected value exists in the [`Registry`].
     pub fn exists(&self) -> bool {
         self.position.is_ok()
     }
 
-    /// Returns `true` if the selected value can be inserted into the `Registry`.
+    /// Returns `true` if the selected value can be inserted into the [`Registry`].
     pub fn is_insertable(&self) -> bool {
         match self.position {
             Ok(_) => false,
@@ -174,13 +198,13 @@ impl Selected<'_> {
         }
     }
 
-    /// Tries to insert the selected value into the `Registry`.
+    /// Tries to insert the selected value into the [`Registry`].
     ///
     /// # Errors
     ///
     /// Returns `Err` if the selected value cannot be inserted because doing so would result in
     /// conflict or overlap with other existing `node_id`s.
-    pub fn insert(&mut self) -> Result<(), crate::Error> {
+    pub fn insert(&mut self) -> Result<(), impl error::Error + Sync + Send> {
         if self.is_insertable() {
             let index = self.position.unwrap_err();
             self.registry.inner.insert(index, self.value);
@@ -191,12 +215,12 @@ impl Selected<'_> {
         }
     }
 
-    /// Tries to remove the selected value from the `Registry`.
+    /// Tries to remove the selected value from the [`Registry`].
     ///
     /// # Errors
     ///
     /// Returns `Err` if the selected value does not exist in the `Registry`.
-    pub fn remove(&mut self) -> Result<(), crate::Error> {
+    pub fn remove(&mut self) -> Result<(), impl error::Error + Sync + Send> {
         if let Ok(index) = self.position {
             self.registry.inner.remove(index).unwrap();
             self.position = Err(index);
@@ -213,7 +237,10 @@ impl Selected<'_> {
     ///
     /// Returns `Err` if the selected value does not exist or cannot be transmuted because doing so
     /// would result in conflict or overlap with other existing `node_id`s.
-    pub fn transmute(&mut self, new_node_id_size: u8) -> Result<NodeSpec, crate::Error> {
+    pub fn transmute(
+        &mut self,
+        new_node_id_size: u8,
+    ) -> Result<NodeSpec, impl error::Error + Sync + Send> {
         assert!(0 < new_node_id_size && new_node_id_size < 24);
         if let Ok(index) = self.position {
             let new_spec =

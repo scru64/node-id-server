@@ -10,7 +10,7 @@ use std::{collections, error, fmt, time};
 
 use scru64::generator::NodeSpec;
 
-mod registry;
+pub mod registry;
 use registry::{NodeIdWithSize, Registry};
 
 /// The server engine.
@@ -115,7 +115,7 @@ impl Engine {
 
             if self.expiry_que.len() < old_len {
                 // vacuum might have released items in (cursor..)
-                self.registry.request(node_id_size, ..)
+                self.registry.request(node_id_size, ..(1 << node_id_size))
             } else {
                 // vacuum did not release anything
                 self.registry.request(node_id_size, ..cursor)
