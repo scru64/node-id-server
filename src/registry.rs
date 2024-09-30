@@ -1,6 +1,6 @@
 //! Low-level [`Registry`] data structure and related items.
 
-use std::{cmp, collections, error, ops};
+use std::{cmp, collections, error, fmt, ops};
 
 use super::NodeSpec;
 
@@ -55,7 +55,7 @@ impl Registry {
         &mut self,
         node_id_size: u8,
         node_id_range: impl ops::RangeBounds<u32>,
-    ) -> Result<NodeSpec, impl error::Error + Sync + Send> {
+    ) -> Result<NodeSpec, RequestError> {
         assert!(0 < node_id_size && node_id_size < 24);
 
         // express range in canonical half-open form (start..end)
@@ -70,7 +70,9 @@ impl Registry {
         }
         .min(1 << node_id_size);
         if range.start >= range.end {
-            return Err(crate::Error("could not issue node_id: empty range"));
+            return Err(RequestError {
+                kind: "empty range",
+            });
         }
 
         // find index of start or, if not found, set cursor to immediately preceding position
@@ -102,7 +104,7 @@ impl Registry {
                 cmp::Ordering::Equal => {
                     cursor_val = (cursor_val_as_min + 1) << (node_id_size - min);
                     if cursor_val >= range.end {
-                        return Err(crate::Error("could not issue node_id: no space"));
+                        return Err(RequestError { kind: "no space" });
                     }
                 }
                 cmp::Ordering::Greater => break,
@@ -322,6 +324,20 @@ impl From<NodeIdWithSize> for NodeSpec {
         NodeSpec::with_node_id(value.node_id(), value.node_id_size()).unwrap()
     }
 }
+
+/// An error reported by [`Registry::request`] on failure.
+#[derive(Debug)]
+pub struct RequestError {
+    kind: &'static str,
+}
+
+impl fmt::Display for RequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "could not issue node_id: {}", self.kind)
+    }
+}
+
+impl error::Error for RequestError {}
 
 #[cfg(test)]
 mod tests {
