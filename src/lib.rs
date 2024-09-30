@@ -381,7 +381,7 @@ mod tests {
     use super::{overlapping, Engine, NodeSpec, Scrambler};
 
     #[test]
-    fn basic() {
+    fn basics() {
         let node_id_size = 16;
         let mut eng = Engine::default();
 

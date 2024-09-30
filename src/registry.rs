@@ -28,7 +28,7 @@ use super::NodeSpec;
 /// reg.select("42/8".parse()?).remove()?;
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct Registry {
@@ -330,7 +330,7 @@ mod tests {
     use super::Registry;
 
     #[test]
-    fn basic() {
+    fn basics() {
         const N: usize = 40_000;
         let mut reg = Registry::default();
 
