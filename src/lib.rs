@@ -376,9 +376,9 @@ pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time};
+    use std::{ops, thread, time};
 
-    use super::{overlapping, Engine, NodeSpec, Scrambler};
+    use super::{overlapping, Engine, NodeIdWithSize, NodeSpec, Scrambler};
 
     #[test]
     fn basics() {
@@ -497,6 +497,33 @@ mod tests {
     }
 
     #[test]
+    fn scrambler() {
+        const N: usize = 40_000;
+        let mut eng = Engine::with_scrambling(rand::random());
+
+        for _ in 0..N {
+            let node_id_size = random_node_id_size(1..24);
+            if let Ok(issued) = eng.request(node_id_size) {
+                assert!(issued.node_prev().is_none());
+                assert_eq!(issued.node_id_size(), node_id_size);
+            }
+        }
+        for _ in 0..N {
+            let node_id_size = random_node_id_size(1..16);
+            if let Ok(issued) = eng.request(node_id_size) {
+                assert!(issued.node_prev().is_none());
+                assert_eq!(issued.node_id_size(), node_id_size);
+            }
+        }
+
+        let mut values = Vec::from_iter(eng.iter());
+        values.sort_by_cached_key(|&e| NodeIdWithSize::from_node_spec_lossy(e));
+        for i in 1..values.len() {
+            assert!(!overlapping(values[i - 1], values[i]));
+        }
+    }
+
+    #[test]
     fn fn_overlapping() {
         fn test_pair(a: &str, b: &str) -> bool {
             let (a, b) = (a.parse().unwrap(), b.parse().unwrap());
@@ -509,5 +536,16 @@ mod tests {
         assert!(test_pair("0x2/4", "0x22/8"));
         assert!(!test_pair("0x2/4", "0x13/8"));
         assert!(!test_pair("0x2/4", "0x44/8"));
+    }
+
+    pub fn random_node_id_size(range: ops::Range<u8>) -> u8 {
+        let end = range.end - range.start - 1;
+        let random = rand::random::<u32>() >> (32 - end);
+        for i in 0..=end {
+            if random < (1u32 << i) {
+                return range.start + i;
+            }
+        }
+        unreachable!();
     }
 }

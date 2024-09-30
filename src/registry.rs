@@ -341,12 +341,11 @@ impl error::Error for RequestError {}
 
 #[cfg(test)]
 mod tests {
-    use std::ops;
-
     use super::Registry;
 
     #[test]
     fn basics() {
+        use crate::tests::random_node_id_size;
         const N: usize = 40_000;
         let mut reg = Registry::default();
 
@@ -486,16 +485,5 @@ mod tests {
             .is_err());
 
         reg.verify_inner();
-    }
-
-    fn random_node_id_size(range: ops::Range<u8>) -> u8 {
-        let end = range.end - range.start - 1;
-        let random = rand::random::<u32>() >> (32 - end);
-        for i in 0..=end {
-            if random < (1u32 << i) {
-                return range.start + i;
-            }
-        }
-        unreachable!();
     }
 }
