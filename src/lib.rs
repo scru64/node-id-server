@@ -31,14 +31,21 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Creates an instance with `node_id` scrambling enabled.
+    /// Creates an instance with `node_id` scrambling enabled by the specified `seed`.
     ///
     /// Use [`Engine::default`] if scrambling is not necessary.
-    pub fn with_scrambling(seed: u64) -> Self {
+    pub fn with_scrambling_seed(seed: u64) -> Self {
+        // PCG32
+        const MUL: u64 = 6364136223846793005;
+        const INC: u64 = 3608283273833198889;
+        let s = INC.wrapping_add(seed).wrapping_mul(MUL).wrapping_add(INC);
+        let xorshifted = (((s >> 18) ^ s) >> 27) as u32;
+        let mask = xorshifted.rotate_right((s >> 59) as u32);
+
         Self {
             registry: Default::default(),
             cursors: Default::default(),
-            scrambler: Scrambler::from_seed(seed),
+            scrambler: Scrambler { mask },
             expiry_que: collections::VecDeque::new(),
         }
     }
@@ -308,6 +315,11 @@ impl Engine {
     pub fn iter(&self) -> impl Iterator<Item = NodeSpec> + '_ {
         self.registry.iter().map(|e| self.scrambler.scramble(e))
     }
+
+    #[cfg(test)]
+    fn scrambler_mask(&self) -> u32 {
+        self.scrambler.mask
+    }
 }
 
 /// An XOR mask that symmetrically `scramble`s and `descramble`s `node_id`s.
@@ -333,16 +345,6 @@ impl Scrambler {
         node_id ^= self.mask;
         node_id >>= 32 - node_spec.node_id_size();
         NodeSpec::with_node_id(node_id, node_spec.node_id_size()).unwrap()
-    }
-
-    fn from_seed(seed: u64) -> Self {
-        // PCG32
-        const MUL: u64 = 6364136223846793005;
-        const INC: u64 = 3608283273833198889;
-        let s = INC.wrapping_add(seed).wrapping_mul(MUL).wrapping_add(INC);
-        let xorshifted = (((s >> 18) ^ s) >> 27) as u32;
-        let mask = xorshifted.rotate_right((s >> 59) as u32);
-        Self { mask }
     }
 }
 
@@ -410,8 +412,10 @@ mod tests {
     fn with_scrambling() {
         let node_id_size = 16;
         let seed = rand::random();
-        let scrambler = Scrambler::from_seed(seed);
-        let mut eng = Engine::with_scrambling(seed);
+        let mut eng = Engine::with_scrambling_seed(seed);
+        let scrambler = Scrambler {
+            mask: eng.scrambler_mask(),
+        };
 
         for i in 0..(1 << node_id_size) {
             let scrambled = eng.request(node_id_size).unwrap();
@@ -499,7 +503,7 @@ mod tests {
     #[test]
     fn scrambler() {
         const N: usize = 40_000;
-        let mut eng = Engine::with_scrambling(rand::random());
+        let mut eng = Engine::with_scrambling_seed(rand::random());
 
         for _ in 0..N {
             let node_id_size = random_node_id_size(1..24);

@@ -16,7 +16,7 @@ use serde_json::{json, Value as JsonValue};
 async fn main() {
     let (scrambling_seed, time_to_live, bind_address) = get_params();
     let engine = match scrambling_seed {
-        Some(seed) => Engine::with_scrambling(seed),
+        Some(seed) => Engine::with_scrambling_seed(seed),
         None => Engine::default(),
     };
 
