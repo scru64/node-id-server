@@ -14,9 +14,9 @@ use serde_json::{json, Value as JsonValue};
 
 #[tokio::main]
 async fn main() {
-    let (scrambling_seed, time_to_live, bind_address) = get_params();
-    let engine = match scrambling_seed {
-        Some(seed) => Engine::with_scrambling_seed(seed),
+    let (scrambling_mask, time_to_live, bind_address) = get_params();
+    let engine = match scrambling_mask {
+        Some(mask) => Engine::with_scrambling(mask),
         None => Engine::default(),
     };
 
@@ -34,10 +34,10 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-fn get_params() -> (Option<u64>, Option<time::Duration>, String) {
+fn get_params() -> (Option<u32>, Option<time::Duration>, String) {
     // mock implementation
     (
-        Some(0x42),
+        Some(1163052311),
         Some(time::Duration::from_secs(60 * 60 * 24)),
         String::from("0.0.0.0:3000"),
     )

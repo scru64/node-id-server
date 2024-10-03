@@ -31,25 +31,20 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Creates an instance with `node_id` scrambling enabled by the specified `seed`.
+    /// Creates an instance with `node_id` scrambling enabled using the specified XOR bit `mask`.
     ///
     /// Use [`Engine::default`] if scrambling is not necessary.
-    pub fn with_scrambling_seed(seed: u64) -> Self {
-        // PCG32
-        const MUL: u64 = 6364136223846793005;
-        const INC: u64 = 3608283273833198889;
-        let s = INC.wrapping_add(seed).wrapping_mul(MUL).wrapping_add(INC);
-        let xorshifted = (((s >> 18) ^ s) >> 27) as u32;
-        let mask = xorshifted.rotate_right((s >> 59) as u32);
-        Self::with_scrambler(XorMask(mask))
-    }
-
-    /// Creates an instance with `node_id` scrambling enabled by the specified `scrambler`.
     ///
-    /// Use [`Engine::default`] if scrambling is not necessary.
-    fn with_scrambler(scrambler: XorMask) -> Self {
+    /// # Examples
+    ///
+    /// ```rust
+    /// use scru64_node_id_server::Engine;
+    ///
+    /// let mut eng = Engine::with_scrambling(rand::random());
+    /// ```
+    pub fn with_scrambling(mask: u32) -> Self {
         Self {
-            scrambler,
+            scrambler: XorMask(mask),
             ..Default::default()
         }
     }
@@ -309,7 +304,9 @@ impl Engine {
 /// An XOR mask that symmetrically `scramble`s and `descramble`s `node_id`s.
 ///
 /// Note that the `Default::default` constructor disables the scrambling.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[repr(transparent)]
+#[serde(transparent)]
 struct XorMask(u32);
 
 impl XorMask {
@@ -362,7 +359,7 @@ pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
 mod tests {
     use std::{ops, thread, time};
 
-    use super::{overlapping, Engine, NodeIdWithSize, NodeSpec};
+    use super::{overlapping, Engine, NodeIdWithSize, NodeSpec, XorMask};
 
     #[test]
     fn basics() {
@@ -393,9 +390,8 @@ mod tests {
     #[test]
     fn with_scrambling() {
         let node_id_size = 16;
-        let seed = rand::random();
-        let mut eng = Engine::with_scrambling_seed(seed);
-        let scrambler = eng.scrambler.clone();
+        let scrambler = XorMask(rand::random());
+        let mut eng = Engine::with_scrambling(scrambler.0);
 
         for i in 0..(1 << node_id_size) {
             let scrambled = eng.request(node_id_size).unwrap();
@@ -483,7 +479,7 @@ mod tests {
     #[test]
     fn scrambler() {
         const N: usize = 40_000;
-        let mut eng = Engine::with_scrambling_seed(rand::random());
+        let mut eng = Engine::with_scrambling(rand::random());
 
         for _ in 0..N {
             let node_id_size = random_node_id_size(1..24);
