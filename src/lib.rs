@@ -184,11 +184,6 @@ impl Engine {
                     .take_while(|e| e.0 < now)
                     .position(|e| e.1 == needle)
                 {
-                    debug_assert!({
-                        let mut iter = self.expiry_que.range(pos..).fuse();
-                        let _ = iter.next();
-                        !iter.any(|e| e.1 == needle)
-                    });
                     self.expiry_que.remove(pos).unwrap();
                     Ok(()) // existing one was expired
                 } else {
@@ -223,6 +218,7 @@ impl Engine {
             expiry_time,
             NodeIdWithSize::from_node_spec_lossy(descrambled),
         );
+        debug_assert!(self.expiry_que.iter().all(|e| e.1 != entry.1));
         if self.expiry_que.back().is_some_and(|e| e < &entry) {
             self.expiry_que.push_back(entry); // shortcut for common pattern
         } else if let Err(index) = self.expiry_que.binary_search(&entry) {
@@ -248,22 +244,11 @@ impl Engine {
             Ok(_) => {
                 let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
                 if let Some(pos) = self.expiry_que.iter().position(|e| e.1 == needle) {
-                    debug_assert!({
-                        let mut iter = self.expiry_que.range(pos..).fuse();
-                        let _ = iter.next();
-                        !iter.any(|e| e.1 == needle)
-                    });
                     self.expiry_que.remove(pos).unwrap();
                 }
                 Ok(())
             }
-            Err(_) if selected.is_insertable() => {
-                debug_assert!({
-                    let needle = NodeIdWithSize::from_node_spec_lossy(descrambled);
-                    !self.expiry_que.iter().any(|e| e.1 == needle)
-                });
-                Ok(())
-            }
+            Err(_) if selected.is_insertable() => Ok(()),
             Err(_) => {
                 let old_len = self.expiry_que.len();
                 self.vacuum_conflicting(descrambled);
