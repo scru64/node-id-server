@@ -24,7 +24,7 @@ pub struct Engine {
 
     /// A scrambler used to give some random-ish flavor to the ordered and fully deterministic
     /// outputs of `Registry`.
-    scrambler: Scrambler,
+    scrambler: XorMask,
 
     /// A set of `node_id`s sorted by their respective expiry time.
     expiry_que: collections::VecDeque<(time::SystemTime, NodeIdWithSize)>,
@@ -41,12 +41,16 @@ impl Engine {
         let s = INC.wrapping_add(seed).wrapping_mul(MUL).wrapping_add(INC);
         let xorshifted = (((s >> 18) ^ s) >> 27) as u32;
         let mask = xorshifted.rotate_right((s >> 59) as u32);
+        Self::with_scrambler(XorMask(mask))
+    }
 
+    /// Creates an instance with `node_id` scrambling enabled by the specified `scrambler`.
+    ///
+    /// Use [`Engine::default`] if scrambling is not necessary.
+    fn with_scrambler(scrambler: XorMask) -> Self {
         Self {
-            registry: Default::default(),
-            cursors: Default::default(),
-            scrambler: Scrambler { mask },
-            expiry_que: collections::VecDeque::new(),
+            scrambler,
+            ..Default::default()
         }
     }
 
@@ -315,22 +319,15 @@ impl Engine {
     pub fn iter(&self) -> impl Iterator<Item = NodeSpec> + '_ {
         self.registry.iter().map(|e| self.scrambler.scramble(e))
     }
-
-    #[cfg(test)]
-    fn scrambler_mask(&self) -> u32 {
-        self.scrambler.mask
-    }
 }
 
 /// An XOR mask that symmetrically `scramble`s and `descramble`s `node_id`s.
 ///
 /// Note that the `Default::default` constructor disables the scrambling.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-struct Scrambler {
-    mask: u32,
-}
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct XorMask(u32);
 
-impl Scrambler {
+impl XorMask {
     fn scramble(&self, node_spec: NodeSpec) -> NodeSpec {
         self.xor(node_spec)
     }
@@ -342,7 +339,7 @@ impl Scrambler {
     fn xor(&self, node_spec: NodeSpec) -> NodeSpec {
         let mut node_id = node_spec.node_id();
         node_id <<= 32 - node_spec.node_id_size();
-        node_id ^= self.mask;
+        node_id ^= self.0;
         node_id >>= 32 - node_spec.node_id_size();
         NodeSpec::with_node_id(node_id, node_spec.node_id_size()).unwrap()
     }
@@ -380,7 +377,7 @@ pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
 mod tests {
     use std::{ops, thread, time};
 
-    use super::{overlapping, Engine, NodeIdWithSize, NodeSpec, Scrambler};
+    use super::{overlapping, Engine, NodeIdWithSize, NodeSpec};
 
     #[test]
     fn basics() {
@@ -413,9 +410,7 @@ mod tests {
         let node_id_size = 16;
         let seed = rand::random();
         let mut eng = Engine::with_scrambling_seed(seed);
-        let scrambler = Scrambler {
-            mask: eng.scrambler_mask(),
-        };
+        let scrambler = eng.scrambler.clone();
 
         for i in 0..(1 << node_id_size) {
             let scrambled = eng.request(node_id_size).unwrap();
