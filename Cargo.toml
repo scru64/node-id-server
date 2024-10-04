@@ -1,19 +1,18 @@
 [package]
 name = "scru64-node-id-server"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["LiosK <contact@mail.liosk.net>"]
 license = "Apache-2.0"
 edition = "2021"
 publish = false
 
 [dependencies]
-scru64 = { version = "2.0", default-features = false }
+scru64 = { version = "2.0", default-features = false, features = ["std", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 axum = "0.7"
 rand = "0.8"
-scru64 = { version = "2.0", default-features = false, features = ["std", "serde"] }
 serde_json = "1.0"
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
 
