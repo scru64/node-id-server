@@ -124,7 +124,7 @@ impl Registry {
 
     /// Searches the `needle` in the list, returning a handle to insert or remove the selected
     /// value without breaking the uniqueness and order of `node_id`s.
-    pub fn select(&mut self, needle: NodeSpec) -> Selected {
+    pub fn select(&mut self, needle: NodeSpec) -> Selected<'_> {
         let value = NodeIdWithSize::from_node_spec_lossy(needle);
         Selected {
             value,
