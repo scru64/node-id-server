@@ -3,14 +3,14 @@
 use std::{error, sync, time};
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use scru64::generator::NodeSpec;
 use scru64_node_id_server::Engine;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 #[tokio::main]
 async fn main() {

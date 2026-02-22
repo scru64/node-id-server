@@ -475,14 +475,16 @@ mod tests {
         );
         assert!(reg.select("0x02/8".parse().unwrap()).transmute(4).is_err());
 
-        assert!(reg
-            .select("0x010/12".parse().unwrap())
-            .transmute(8)
-            .is_err());
-        assert!(reg
-            .select("0x01f/12".parse().unwrap())
-            .transmute(8)
-            .is_err());
+        assert!(
+            reg.select("0x010/12".parse().unwrap())
+                .transmute(8)
+                .is_err()
+        );
+        assert!(
+            reg.select("0x01f/12".parse().unwrap())
+                .transmute(8)
+                .is_err()
+        );
 
         reg.verify_inner();
     }

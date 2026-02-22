@@ -359,7 +359,7 @@ pub fn overlapping(a: NodeSpec, b: NodeSpec) -> bool {
 mod tests {
     use std::{ops, thread, time};
 
-    use super::{overlapping, Engine, NodeIdWithSize, NodeSpec, XorMask};
+    use super::{Engine, NodeIdWithSize, NodeSpec, XorMask, overlapping};
 
     #[test]
     fn basics() {
